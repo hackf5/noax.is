@@ -8,6 +8,10 @@
   ],
   "workers_dev": false,
   "preview_urls": false,
+  "rules": [
+    { "type": "Text", "globs": ["**/*.svg"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.ico"], "fallthrough": true }
+  ],
   "routes": [
     {
       "pattern": "noax.is",

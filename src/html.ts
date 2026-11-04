@@ -46,7 +46,7 @@ nav { margin-block-start: 2rem; }
 
 function layout(content: string, title = "noax.is", description = "Notes on noax.is"): string {
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/style.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title><link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
 <body><div class="page"><header><h1><a href="/">noax.is</a></h1></header><main>${content}</main></div></body></html>`;
 }
 

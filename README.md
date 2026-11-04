@@ -71,3 +71,5 @@ The live smoke test briefly publishes an explicitly labelled verification post, 
 Renew or rotate the Access service token before its expiry. Its resource ID and expiry are recorded in `.local/provisioning.json`. A code rollback does not roll back D1 data; SQL migrations are tracked separately. Before future destructive schema changes, export or otherwise establish a recovery point.
 
 Cut 1 has no dashboard, drafts, feeds, images, tags or search.
+
+The open-ring favicon is drawn in `src/assets/favicon.svg`. Its ICO fallback contains 16×16 and 32×32 raster exports of the same mark; regenerate both sizes if the SVG changes. Both assets are bundled into the Worker and served directly without D1 access.

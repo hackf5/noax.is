@@ -1,4 +1,6 @@
 import { authenticate } from "./auth";
+import faviconIco from "./assets/favicon.ico";
+import faviconSvg from "./assets/favicon.svg";
 import { errorPage, postPage, stylesheet, timeline } from "./html";
 import { handleMcp } from "./mcp";
 import { Posts } from "./posts";
@@ -8,10 +10,10 @@ const securityHeaders = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Content-Security-Policy": "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
 };
 
-function respond(body: string, status = 200, type = "text/html; charset=utf-8"): Response {
+function respond(body: BodyInit | null, status = 200, type = "text/html; charset=utf-8"): Response {
   return new Response(body, { status, headers: { ...securityHeaders, "Content-Type": type } });
 }
 
@@ -33,6 +35,11 @@ export default {
     if (url.hostname !== env.PUBLIC_HOST) return respond("Not found", 404, "text/plain; charset=utf-8");
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Method not allowed", { status: 405, headers: { ...securityHeaders, Allow: "GET, HEAD" } });
+    }
+    if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico") {
+      const svg = url.pathname === "/favicon.svg";
+      return respond(request.method === "HEAD" ? null : svg ? faviconSvg : faviconIco, 200,
+        svg ? "image/svg+xml" : "image/vnd.microsoft.icon");
     }
     let response: Response;
     try {
