@@ -1,3 +1,0 @@
-[mcp_servers.noax]
-url = "https://mcp.noax.is/mcp"
-env_http_headers = { "CF-Access-Client-Id" = "NOAX_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "NOAX_ACCESS_CLIENT_SECRET" }

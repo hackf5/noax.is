@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "noax": {
+      "type": "http",
+      "url": "https://mcp.noax.is/mcp",
+      "headersHelper": "node scripts/mcp-headers.mjs"
+    }
+  }
+}

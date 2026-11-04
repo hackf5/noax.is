@@ -16,6 +16,7 @@
     "deploy": "node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js deploy",
     "cloudflare:inspect": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs inspect",
     "cloudflare:provision": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs provision",
+    "mcp:check": "node scripts/check-mcp.mjs",
     "smoke": "node --env-file=.local/mcp.env scripts/smoke.mjs"
   },
   "dependencies": {

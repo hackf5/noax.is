@@ -6,6 +6,12 @@ A minimal single-author microblog: one Cloudflare Worker, one D1 database, and f
 - Individual posts: `https://noax.is/posts/{id}`
 - Private MCP: `https://mcp.noax.is/mcp`, protected by Cloudflare Access Service Auth
 
+## Writing for No Axis
+
+The current purpose of No Axis is balanced discussion of potentially polarising issues: start without a predetermined angle, present the arguments as the author sees them, and draw the conclusions the reasoning supports. The editorial brief and publishing workflow live in [AGENTS.md](AGENTS.md); Claude Code is directed there by [CLAUDE.md](CLAUDE.md).
+
+Start a new chat in this repository with, for example, "We're about to draft a new article about ...". Develop the text in the conversation. When it is ready, say "post it". The harness should publish the final agreed Markdown, check the public page and return its URL. That instruction is sufficient authorization; article publication requires no code deployment.
+
 ## Local development
 
 Requires Node.js 24 or newer.
@@ -26,17 +32,27 @@ npm run build
 
 ## Connect a coding harness
 
-Load the Access service token into the environment before launching the harness:
+The repository includes project configurations for [Codex](.codex/config.toml) and [Claude Code](.mcp.json). Both use a local headers helper to read the publishing credentials from `.local/mcp.env` automatically. Credentials stay outside the committed configuration; you do not need to export variables before each session.
+
+Start the CLI from the repository root:
 
 ```sh
-set -a
-. .local/mcp.env
-set +a
+codex
+# or
+claude
 ```
 
-For Codex, merge [examples/codex.toml](examples/codex.toml) into your user or trusted project MCP configuration. For Claude Code, merge [examples/claude.mcp.json](examples/claude.mcp.json) into `.mcp.json`. The examples contain environment-variable references, never credentials.
+Use a fresh session after changing MCP configuration. Codex loads project configuration for trusted projects; Claude Code may ask you to approve the project's `noax` MCP server the first time. This is the client's project-trust step.
 
-Both connect directly over Streamable HTTP. An OAuth login or a custom publishing CLI is unnecessary. See the official [Codex MCP configuration](https://developers.openai.com/codex/mcp) and [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json).
+Check authentication and tool discovery without publishing anything:
+
+```sh
+npm run mcp:check
+```
+
+Do not run `scripts/mcp-headers.mjs` directly in a logged shell: its stdout is the credentials JSON intended for the MCP client. Use `mcp:check` for diagnostics. A new checkout needs its own ignored `.local/mcp.env`, restored through your normal secret-management process. Header helpers require Node.js 24 or newer; the connection-check command also needs `npm ci`.
+
+Both clients connect directly over Streamable HTTP. See the official [Codex MCP configuration](https://developers.openai.com/codex/mcp) and [Claude Code headers helper documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication).
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
