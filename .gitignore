@@ -1,1 +1,10 @@
 .local/
+node_modules/
+.wrangler/
+dist/
+coverage/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example

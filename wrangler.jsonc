@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "noax-is",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-04",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "noax.is",
+      "custom_domain": true
+    },
+    {
+      "pattern": "mcp.noax.is",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "PUBLIC_HOST": "noax.is",
+    "MCP_HOST": "mcp.noax.is",
+    "ACCESS_TEAM_DOMAIN": "https://hackf5.cloudflareaccess.com",
+    "ACCESS_AUD": "94f0225f8a5e2d96a5344f0bf366cbfc12159bf82b68a072b8f4de80b07633a8"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "noax-is",
+      "database_id": "e3f5e4f7-1edb-4d21-9e95-4a5e0766eaed",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
