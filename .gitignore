@@ -1,4 +1,8 @@
 .local/
+.mcp.json
+.codex/config.toml
+EDITORIAL.md
+.claude/settings.local.json
 node_modules/
 .wrangler/
 dist/

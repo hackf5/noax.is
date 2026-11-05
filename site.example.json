@@ -1,0 +1,7 @@
+{
+  "public_host": "blog.example.com",
+  "mcp_host": "mcp.blog.example.com",
+  "title": "My blog",
+  "description": "Notes from my blog.",
+  "locale": "en"
+}

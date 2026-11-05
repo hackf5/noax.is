@@ -8,8 +8,13 @@ export default defineConfig({
     miniflare: {
       bindings: {
         TEST_MIGRATIONS: await readD1Migrations("./migrations"),
+        PUBLIC_HOST: "blog.test",
+        MCP_HOST: "mcp.blog.test",
         ACCESS_TEAM_DOMAIN: "https://test-noax.cloudflareaccess.com",
         ACCESS_AUD: "noax-test-audience",
+        SITE_TITLE: "Test Blog",
+        SITE_DESCRIPTION: "Notes for the test suite.",
+        SITE_LOCALE: "en-GB",
       },
     },
   })],

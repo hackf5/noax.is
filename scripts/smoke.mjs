@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
-const mcpUrl = new URL(process.env.NOAX_MCP_URL || "https://mcp.noax.is/mcp");
-if (mcpUrl.origin !== "https://mcp.noax.is" || mcpUrl.pathname !== "/mcp") {
-  throw new Error("This smoke test sends credentials only to https://mcp.noax.is/mcp.");
+if (!process.env.NOAX_MCP_URL) throw new Error("Load NOAX_MCP_URL from .local/mcp.env.");
+const mcpUrl = new URL(process.env.NOAX_MCP_URL);
+if (mcpUrl.protocol !== "https:" || mcpUrl.pathname !== "/mcp") {
+  throw new Error("NOAX_MCP_URL must be an https URL ending in /mcp.");
 }
 const clientId = process.env.NOAX_ACCESS_CLIENT_ID;
 const clientSecret = process.env.NOAX_ACCESS_CLIENT_SECRET;
 if (!clientId || !clientSecret) throw new Error("Load NOAX_ACCESS_CLIENT_ID and NOAX_ACCESS_CLIENT_SECRET from .local/mcp.env.");
-const client = new Client({ name: "noax-is-smoke", version: "0.1.0" });
+const client = new Client({ name: "noax-smoke", version: "0.1.0" });
 const transport = new StreamableHTTPClientTransport(mcpUrl, {
   requestInit: { headers: { "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret } },
   fetch: (input, init) => {
@@ -55,7 +56,7 @@ try {
   await call("delete_post", { id: created.id, expected_version: created.version });
   deleted = true;
   assert.equal((await fetch(created.url)).status, 404);
-  assert.equal((await fetch("https://noax.is/mcp", { method: "POST" })).status, 405);
+  assert.equal((await fetch(new URL("/mcp", created.url), { method: "POST" })).status, 405);
   console.log("Editing, conflict rejection, listing, reading, deletion and public-host isolation passed.");
 } finally {
   // If creation succeeded but its response was lost, find this run's unique marker.

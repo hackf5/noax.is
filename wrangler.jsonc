@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "noax-is",
+  "name": "noax",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-04",
   "compatibility_flags": [
@@ -12,27 +12,20 @@
     { "type": "Text", "globs": ["**/*.svg"], "fallthrough": true },
     { "type": "Data", "globs": ["**/*.ico"], "fallthrough": true }
   ],
-  "routes": [
-    {
-      "pattern": "noax.is",
-      "custom_domain": true
-    },
-    {
-      "pattern": "mcp.noax.is",
-      "custom_domain": true
-    }
-  ],
   "vars": {
-    "PUBLIC_HOST": "noax.is",
-    "MCP_HOST": "mcp.noax.is",
-    "ACCESS_TEAM_DOMAIN": "https://hackf5.cloudflareaccess.com",
-    "ACCESS_AUD": "94f0225f8a5e2d96a5344f0bf366cbfc12159bf82b68a072b8f4de80b07633a8"
+    "PUBLIC_HOST": "localhost",
+    "MCP_HOST": "mcp.localhost",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "SITE_TITLE": "noax",
+    "SITE_DESCRIPTION": "A minimal microblog.",
+    "SITE_LOCALE": "en"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "noax-is",
-      "database_id": "e3f5e4f7-1edb-4d21-9e95-4a5e0766eaed",
+      "database_name": "noax",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
   ],

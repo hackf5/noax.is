@@ -1,58 +1,82 @@
 # noax.is
 
-A minimal single-author microblog: one Cloudflare Worker, one D1 database, and five MCP publishing tools. Posts are Markdown stored in D1. Creating a post publishes it immediately.
+Noax.is is a minimal, extensible microblog that you can host for free (excluding domain costs).
 
-- Public timeline: https://noax.is
-- Individual posts: `https://noax.is/posts/{id}`
-- Private MCP: `https://mcp.noax.is/mcp`, protected by Cloudflare Access Service Auth
+Since you do almost everything else through your coding agent, why are you messing around with an admin dashboard and typing into a prosemirror wrapper? Exactly, you're not. The browser and the mouse are so yesterday.
 
-## Writing for No Axis
+You tell the coding agent to make a post, it makes that post. You tell the agent you want a new feature (a search box, an image gallery) it makes it. No frameworks, no plugins. Two cloudflare workers, D1 for persistence (maybe you'll need R2 for general storage) all on the free plan and that's it. The world is yours.
 
-The current purpose of No Axis is balanced discussion of potentially polarising issues: start without a predetermined angle, present the arguments as the author sees them, and draw the conclusions the reasoning supports. The editorial brief and publishing workflow live in [AGENTS.md](AGENTS.md); Claude Code is directed there by [CLAUDE.md](CLAUDE.md).
+See it running at [noax.is](https://noax.is).
 
-Start a new chat in this repository with, for example, "We're about to draft a new article about ...". Develop the text in the conversation. When it is ready, say "post it". The harness should publish the final agreed Markdown, check the public page and return its URL. That instruction is sufficient authorization; article publication requires no code deployment.
+The text below is for your agent, not you. TL;DR; fellow thetan. Leave the "details" to the big guy/gal. Your squishy organic brain is too valuable to be worrying about bash scripts and CSS grids (snooze). If you can dream it you (the agent) can make it.
 
-## Local development
+Stop reading now and point the agent at this page. It will take it from here.
 
-Requires Node.js 24 or newer.
+## How it works
+
+- **The public site** is server-rendered HTML with no JavaScript, a strict Content Security Policy and an Atom feed at `/feed.xml`.
+- **Publishing** happens through a private MCP endpoint on its own hostname, protected by Cloudflare Access.
+- **Posts** are Markdown stored in D1, not in Git, so publishing needs no deploy. Creating a post publishes it immediately.
+
+Your blog's settings and credentials stay in an ignored `.local/` directory, so you can `git pull` updates without conflicts.
+
+## What you need
+
+- **A domain** on an active Cloudflare zone. The blog can be at the apex or on a subdomain. The hostnames you choose mustn't have existing CNAME records.
+- **A Zero Trust organisation.** Create one once at [one.dash.cloudflare.com](https://one.dash.cloudflare.com). Cloudflare asks for payment details even on the Free plan, but doesn't charge for it.
+- **Node.js 24 or newer.**
+- **A Cloudflare API token** with the permissions below.
+- **An MCP client** that can send custom headers. Claude Code and Codex are configured for you.
+
+### API token
+
+Create a token in the Cloudflare dashboard with:
+
+| Scope | Permission | Used for |
+| --- | --- | --- |
+| Account | Workers Scripts: Edit | Deploying, checking domain bindings |
+| Account | D1: Edit | Creating the database, running migrations |
+| Account | Access: Apps and Policies: Edit | Protecting the MCP hostname |
+| Account | Access: Service Tokens: Edit | Creating your publishing credential |
+| Account | Access: Organizations: Read | Finding your Access team |
+| Zone | Zone: Read | Finding your zone |
+| Zone | Workers Routes: Edit | Attaching your hostnames |
+
+The Worker never uses this token, and neither does publishing. You can delete it once setup finishes. You'll need a new one to deploy updates, run remote migrations or rotate credentials.
+
+## Set up
 
 ```sh
+git clone https://github.com/hackf5/noax.is.git
+cd noax.is
 npm ci
-npm run db:migrate:local
-npm run dev
+mkdir -p .local
+cp site.example.json .local/site.json    # then edit it
+cp .env.example .local/cloudflare.env    # then add your token and account ID
+npm run setup
 ```
 
-Open `http://localhost:8787`. The development command preserves the local origin and sets the public hostname to `localhost`; production domain settings remain in `wrangler.jsonc`. D1 state is local; production data is not used. MCP authentication stays enabled locally. The integration tests exercise its full protocol with generated signing keys and a mocked Access JWKS endpoint.
+`npm run setup` creates the Access application, service token and D1 database, applies migrations, deploys the Worker and checks the connection. It's safe to run again, and it stops rather than take over a hostname that belongs to another Worker. Run `npm run cloudflare:inspect` first if you'd like to see what's on the account; it changes nothing.
+
+If the final check fails on a first deploy, the new hostname's certificate may not be ready. Wait a few minutes and run `npm run mcp:check`.
+
+Coding agents can do most of this for you. `AGENTS.md` explains which steps need you and which they can run.
+
+## Publish
+
+Start your client from the repository root:
 
 ```sh
-npm run typecheck
-npm test
-npm run build
-```
-
-## Connect a coding harness
-
-The repository includes project configurations for [Codex](.codex/config.toml) and [Claude Code](.mcp.json). Both use a local headers helper to read the publishing credentials from `.local/mcp.env` automatically. Credentials stay outside the committed configuration; you do not need to export variables before each session.
-
-Start the CLI from the repository root:
-
-```sh
-codex
-# or
 claude
+# or
+codex
 ```
 
-Use a fresh session after changing MCP configuration. Codex loads project configuration for trusted projects; Claude Code may ask you to approve the project's `noax` MCP server the first time. This is the client's project-trust step.
+Use a fresh session after setup. Your client may ask you to approve the project's `noax` MCP server the first time.
 
-Check authentication and tool discovery without publishing anything:
+Then say something like "We're about to draft a new article about ...", develop the text in the conversation, and say "post it" when it's ready. The agent publishes the agreed Markdown, checks the public page and gives you the URL.
 
-```sh
-npm run mcp:check
-```
-
-Do not run `scripts/mcp-headers.mjs` directly in a logged shell: its stdout is the credentials JSON intended for the MCP client. Use `mcp:check` for diagnostics. A new checkout needs its own ignored `.local/mcp.env`, restored through your normal secret-management process. Header helpers require Node.js 24 or newer; the connection-check command also needs `npm ci`.
-
-Both clients connect directly over Streamable HTTP. See the official [Codex MCP configuration](https://developers.openai.com/codex/mcp) and [Claude Code headers helper documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication).
+To give your agent a house style, copy `EDITORIAL.example.md` to `EDITORIAL.md` and fill it in. It's ignored by Git and read in editorial sessions.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -62,30 +86,118 @@ Both clients connect directly over Streamable HTTP. See the official [Codex MCP 
 | `update_post` | `id`, `markdown`, `expected_version` | Replace the live Markdown. |
 | `delete_post` | `id`, `expected_version` | Delete permanently. |
 
-Prepare drafts in the conversation. Read before editing/deleting; a version conflict requires reviewing the newer post. If creation times out, list posts before retrying. Post bodies must contain non-whitespace text and fit within 64,000 characters. Markdown supports paragraphs, headings, emphasis, lists, quotes, links and code; raw HTML and image rendering are disabled.
+Posts must contain text and fit within 64,000 characters. Markdown supports paragraphs, headings, emphasis, lists, quotes, links and code. Raw HTML and images are disabled. A post's page title and description come from its first heading or line and the text that follows.
 
-Successful tools return structured JSON; operation failures have `isError: true` and an `error` with a code and message. SDK input-validation failures are also returned as MCP tool errors.
+## Configure
 
-## Cloudflare setup and deployment
+Settings live in `.local/site.json`. Run `npm run deploy` after changing them.
 
-Put `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in `.local/cloudflare.env`. This file is ignored. Provisioning credentials are separate from the service token used for publishing.
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `public_host` | Required | Where the blog is served. |
+| `mcp_host` | `mcp.` + `public_host` | The private publishing hostname. Must be in the same zone. |
+| `title` | `public_host` | Shown in the header, page titles and feed. |
+| `description` | `Notes on` + `title` | The default page description and feed subtitle. |
+| `locale` | `en` | Page language and date format. Times are shown in UTC. |
+
+If you change `mcp_host`, also update `NOAX_MCP_URL` in `.local/mcp.env` and run `npm run cloudflare:provision`.
+
+For anything else, change the code. It's about 500 lines, and the styling is one stylesheet in `src/html.ts`. Fork the repository if you want to keep those changes.
+
+## Costs
+
+noax is designed to fit Cloudflare's free plans. The domain is the only thing you have to pay for.
+
+| Limit on the Free plan | Allowance |
+| --- | --- |
+| Worker requests | 100,000 a day |
+| Worker CPU | 10 ms per request |
+| D1 rows read | 5 million a day |
+| D1 rows written | 100,000 a day |
+| D1 database size | 500 MB |
+
+A page view normally costs one Worker request, as browsers cache the stylesheet and favicons for a day. Posts are rendered when they're written, so reading the site does no Markdown work.
+
+Rendered output is a cache, so posts pick up rendering changes automatically after an update. Each post is rebuilt the first time it's read and saved straight away. On the Free plan, a page of long posts can exceed the CPU limit while this happens and show a Cloudflare error. No work is lost, though, so the page loads after a few refreshes.
+
+If you go over a daily limit on the Free plan, you get errors rather than a bill, and the limits reset at 00:00 UTC. The Worker has no rate limiting of its own, so anyone sending enough requests can use up the day's allowance.
+
+These limits come from Cloudflare's [Workers](https://developers.cloudflare.com/workers/platform/limits/) and [D1](https://developers.cloudflare.com/d1/platform/limits/) documentation. Check there for current figures.
+
+## Operate
+
+### Update
 
 ```sh
-npm run cloudflare:inspect
-npm run cloudflare:provision
+git pull
+npm ci
 npm run db:migrate:remote
 npm run deploy
-npm run smoke
 ```
 
-Provisioning creates the named D1 database, Access application and one-year service token, protecting the entire MCP hostname before it is deployed. It saves the service-token secret once to `.local/mcp.env` with mode `0600` and writes only non-secret identifiers into `wrangler.jsonc`. Back up the local credentials through your normal secret-management process. Restore that file or deliberately rotate the service token if it is lost; provisioning will not silently replace credentials.
+Run the migration first. This needs an API token in `.local/cloudflare.env`.
 
-The Worker validates Access JWT signatures, issuer, expiry and application audience. `workers.dev` and preview URLs are disabled. Only `mcp.noax.is/mcp` dispatches publishing tools. Public responses use `Cache-Control: no-store`, so edits and deletions appear on the next request.
+### Back up
 
-The live smoke test briefly publishes an explicitly labelled verification post, exercises reading/editing/conflict rejection, and deletes it. It never changes existing posts. Do not run it unless temporary public verification is intended.
+Posts exist only in D1, and deleting one is permanent. D1 Time Travel keeps 7 days of history on the Free plan and 30 on paid plans. To export a copy:
 
-Renew or rotate the Access service token before its expiry. Its resource ID and expiry are recorded in `.local/provisioning.json`. A code rollback does not roll back D1 data; SQL migrations are tracked separately. Before future destructive schema changes, export or otherwise establish a recovery point.
+```sh
+node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js d1 export DB \
+  --remote --output .local/backup.sql --config .local/wrangler.deploy.jsonc
+```
 
-Cut 1 has no dashboard, drafts, feeds, images, tags or search.
+### Look after `.local/`
 
-The open-ring favicon is drawn in `src/assets/favicon.svg`. Its ICO fallback contains 16×16 and 32×32 raster exports of the same mark; regenerate both sizes if the SVG changes. Both assets are bundled into the Worker and served directly without D1 access.
+| File | Contains | If you lose it |
+| --- | --- | --- |
+| `site.json` | Your blog's settings | Recreate it from `site.example.json`. |
+| `cloudflare.env` | Your API token | Create a new token. |
+| `mcp.env` | Your publishing credential | Run `npm run cloudflare:rotate`. |
+| `provisioning.json` | Cloudflare resource IDs | Run `npm run cloudflare:provision`. |
+| `wrangler.deploy.jsonc` | Generated deploy config | It's regenerated on every deploy. |
+
+`.mcp.json` and `.codex/config.toml` are generated in the same way. Back up `.local/` and `EDITORIAL.md` with your other secrets, as a new checkout needs them.
+
+Don't run `scripts/mcp-headers.mjs` directly in a logged shell, because its output is your credential. Use `npm run mcp:check`.
+
+### Renew the publishing credential
+
+The Access service token lasts a year, and publishing stops when it expires. `npm run mcp:check` warns you 30 days ahead. `npm run cloudflare:rotate` issues a new secret and extends the expiry, and only needs a token with Access: Service Tokens: Edit.
+
+### Verify a deployment
+
+`npm run smoke` checks publishing end to end. It briefly publishes a clearly labelled post, tests editing and conflict handling, and deletes it, so only run it if a short-lived public post is acceptable.
+
+## Develop
+
+```sh
+npm ci
+npm run db:migrate:local
+npm run dev
+```
+
+Open `http://localhost:8787`. All of this works on a fresh clone with no Cloudflare account, using a local database. MCP authentication stays on locally, so to see a post, add one directly:
+
+```sh
+npx wrangler d1 execute DB --local --command "INSERT INTO posts (id, markdown, created_at, updated_at) VALUES ('00000000-0000-4000-8000-000000000001', '# Hello', strftime('%Y-%m-%dT%H:%M:%fZ'), strftime('%Y-%m-%dT%H:%M:%fZ'))"
+```
+
+Before sending a change:
+
+```sh
+npm run typecheck
+npm test
+npm run build
+```
+
+The tests cover the full MCP protocol with generated signing keys, and provisioning against a fake Cloudflare API.
+
+## Scope
+
+Minimalism is the point. noax has no dashboard, drafts, comments, images, tags, search, multiple authors or client-side JavaScript, and it isn't likely to gain them. Bug fixes and changes that make it smaller or easier to run are very welcome. Please open an issue before starting anything larger.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Licence
+
+[MIT](LICENSE)

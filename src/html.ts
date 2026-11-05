@@ -1,20 +1,27 @@
-import MarkdownIt from "markdown-it";
-import type { Post, PostPage } from "./types";
+import type { Env, PostPage, PublishedPost } from "./types";
 
-const markdown = new MarkdownIt("commonmark", { html: false }).disable("image");
-const defaultFence = markdown.renderer.rules.fence!;
-markdown.renderer.rules.fence = (tokens, index, options, env, renderer) =>
-  defaultFence(tokens, index, options, env, renderer).replace("<pre>", '<pre tabindex="0">');
-for (const rule of ["heading_open", "heading_close"] as const) {
-  markdown.renderer.rules[rule] = (tokens, index) => {
-    const token = tokens[index]!;
-    const level = Math.min(Number(token.tag.slice(1)) + 1, 6);
-    return rule === "heading_open" ? `<h${level}>` : `</h${level}>\n`;
+export interface Site {
+  title: string;
+  description: string;
+  locale: string;
+  origin: string;
+}
+
+export function siteFrom(env: Env): Site {
+  return {
+    title: env.SITE_TITLE,
+    description: env.SITE_DESCRIPTION,
+    locale: env.SITE_LOCALE,
+    origin: `https://${env.PUBLIC_HOST}`,
   };
 }
-const defaultCodeBlock = markdown.renderer.rules.code_block!;
-markdown.renderer.rules.code_block = (tokens, index, options, env, renderer) =>
-  defaultCodeBlock(tokens, index, options, env, renderer).replace("<pre>", '<pre tabindex="0">');
+
+interface PageMeta {
+  title?: string;
+  description?: string;
+  canonical?: string;
+  published?: string;
+}
 
 export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
@@ -44,29 +51,55 @@ nav { margin-block-start: 2rem; }
 .quiet { color: var(--muted); }
 `;
 
-function layout(content: string, title = "noax.is", description = "Notes on noax.is"): string {
+function ogTag(property: string, content: string): string {
+  return `<meta property="${property}" content="${escapeHtml(content)}">`;
+}
+
+function layout(site: Site, content: string, meta: PageMeta = {}): string {
+  const title = meta.title ? `${meta.title} · ${site.title}` : site.title;
+  const description = meta.description ?? site.description;
+  const social = meta.canonical
+    ? `<link rel="canonical" href="${escapeHtml(meta.canonical)}">${[
+        ogTag("og:title", meta.title ?? site.title),
+        ogTag("og:description", description),
+        ogTag("og:type", meta.published ? "article" : "website"),
+        ogTag("og:url", meta.canonical),
+        ogTag("og:site_name", site.title),
+        ...(meta.published ? [ogTag("article:published_time", meta.published)] : []),
+      ].join("")}`
+    : "";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title><link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
-<body><div class="page"><header><h1><a href="/">noax.is</a></h1></header><main>${content}</main></div></body></html>`;
+<html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml"><link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
+<body><div class="page"><header><h1><a href="/">${escapeHtml(site.title)}</a></h1></header><main>${content}</main></div></body></html>`;
 }
 
-function renderPost(post: Post): string {
-  const date = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(post.created_at));
-  return `<article><a href="/posts/${post.id}"><time datetime="${escapeHtml(post.created_at)}">${escapeHtml(date)} UTC</time></a><div class="body">${markdown.render(post.markdown)}</div></article>`;
+function dateFormat(site: Site): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(site.locale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
 }
 
-export function timeline(page: PostPage): string {
-  const posts = page.posts.map(renderPost).join("") || '<p class="quiet">No posts yet.</p>';
+function renderPost(post: PublishedPost, dates: Intl.DateTimeFormat): string {
+  const date = dates.format(new Date(post.created_at));
+  return `<article><a href="/posts/${post.id}"><time datetime="${escapeHtml(post.created_at)}">${escapeHtml(date)} UTC</time></a><div class="body">${post.html}</div></article>`;
+}
+
+export function timeline(site: Site, page: PostPage<PublishedPost>, firstPage: boolean): string {
+  const dates = dateFormat(site);
+  const posts = page.posts.map((post) => renderPost(post, dates)).join("") || '<p class="quiet">No posts yet.</p>';
   const navigation = page.next_cursor
     ? `<nav aria-label="Pagination"><a href="/?before=${encodeURIComponent(page.next_cursor)}">Older posts</a></nav>`
     : "";
-  return layout(posts + navigation);
+  return layout(site, posts + navigation, firstPage ? { canonical: `${site.origin}/` } : {});
 }
 
-export function postPage(post: Post): string {
-  return layout(`${renderPost(post)}<nav><a href="/">All posts</a></nav>`, "Post · noax.is");
+export function postPage(site: Site, post: PublishedPost): string {
+  return layout(site, `${renderPost(post, dateFormat(site))}<nav><a href="/">All posts</a></nav>`, {
+    title: post.title,
+    description: post.summary,
+    canonical: `${site.origin}/posts/${post.id}`,
+    published: post.created_at,
+  });
 }
 
-export function errorPage(message: string): string {
-  return layout(`<p>${escapeHtml(message)}</p><p><a href="/">All posts</a></p>`, `${message} · noax.is`);
+export function errorPage(site: Site, message: string): string {
+  return layout(site, `<p>${escapeHtml(message)}</p><p><a href="/">All posts</a></p>`, { title: message });
 }
