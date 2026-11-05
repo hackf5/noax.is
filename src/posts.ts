@@ -1,5 +1,5 @@
 import { RENDER_VERSION, renderMarkdown } from "./render";
-import { parsePost, slugCandidate, slugifyTitle } from "./post-metadata";
+import { parsePost, slugifyTitle } from "./post-metadata";
 import { PostError, type Post, type PostPage, type PublishedPost, type Rendered, type SitemapBucket, type SitemapPost } from "./types";
 
 export const PAGE_SIZE = 20;
@@ -127,15 +127,20 @@ export class Posts {
     validateMarkdown(markdown);
     const { html, title, summary } = this.render(markdown);
     const timestamp = new Date().toISOString();
-    const id = crypto.randomUUID();
-    const base = slugifyTitle(parsePost(markdown).title);
-    const insert = this.db.prepare(
-      `INSERT INTO posts (id, slug, markdown, html, title, summary, render_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO NOTHING RETURNING ${POST_COLUMNS}`,
-    );
-    for (let attempt = 1; ; attempt++) {
-      const post = await insert.bind(id, slugCandidate(base, attempt), markdown, html, title, summary, RENDER_VERSION, timestamp, timestamp).first<Post>();
-      if (post) return post;
-    }
+    // Titles can repeat but slugs can't, so the database picks the number. One statement is atomic, so
+    // concurrent posts can't take the same slug, and a post costs one query however many share its
+    // title. It uses the highest number rather than a count, which would collide after a deletion,
+    // and ignores runs of over 9 digits, which could overflow.
+    const post = await this.db.prepare(
+      `INSERT INTO posts (id, slug, markdown, html, title, summary, render_version, created_at, updated_at)
+       SELECT ?1, CASE WHEN EXISTS (SELECT 1 FROM posts WHERE slug = ?2) THEN ?2 || '-' || (1 + COALESCE((
+           SELECT MAX(CAST(substr(slug, length(?2) + 2) AS INTEGER)) FROM posts
+           WHERE slug GLOB ?2 || '-[0-9]*' AND length(slug) <= length(?2) + 10
+         ), 1)) ELSE ?2 END, ?3, ?4, ?5, ?6, ?7, ?8, ?8
+       RETURNING ${POST_COLUMNS}`,
+    ).bind(crypto.randomUUID(), slugifyTitle(parsePost(markdown).title), markdown, html, title, summary, RENDER_VERSION, timestamp).first<Post>();
+    if (!post) throw new Error("Post insert returned no result.");
+    return post;
   }
 
   async update(id: string, markdown: string, expectedVersion: number): Promise<Post> {
