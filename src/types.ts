@@ -4,6 +4,9 @@ export interface Env {
   MCP_HOST: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
+  SITE_TITLE: string;
+  SITE_DESCRIPTION: string;
+  SITE_LOCALE: string;
 }
 
 export interface Post {
@@ -14,8 +17,16 @@ export interface Post {
   version: number;
 }
 
-export interface PostPage {
-  posts: Post[];
+export interface Rendered {
+  html: string;
+  title: string;
+  summary: string;
+}
+
+export type PublishedPost = Post & Rendered;
+
+export interface PostPage<T = Post> {
+  posts: T[];
   next_cursor: string | null;
 }
 

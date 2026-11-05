@@ -26,7 +26,10 @@
     "PUBLIC_HOST": "noax.is",
     "MCP_HOST": "mcp.noax.is",
     "ACCESS_TEAM_DOMAIN": "https://hackf5.cloudflareaccess.com",
-    "ACCESS_AUD": "94f0225f8a5e2d96a5344f0bf366cbfc12159bf82b68a072b8f4de80b07633a8"
+    "ACCESS_AUD": "94f0225f8a5e2d96a5344f0bf366cbfc12159bf82b68a072b8f4de80b07633a8",
+    "SITE_TITLE": "noax.is",
+    "SITE_DESCRIPTION": "Notes on noax.is",
+    "SITE_LOCALE": "en-GB"
   },
   "d1_databases": [
     {

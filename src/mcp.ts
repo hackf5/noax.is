@@ -20,8 +20,8 @@ const postResultSchema = z.object({ post: postSchema });
 export function createServer(env: Env): McpServer {
   const posts = new Posts(env.DB);
   const publicPost = (post: Post) => ({ ...post, url: `https://${env.PUBLIC_HOST}/posts/${post.id}` });
-  const server = new McpServer({ name: "noax.is", version: "0.1.0" }, {
-    instructions: "Manage the single-author noax.is microblog. create_post immediately publishes publicly; update_post changes a live post; delete_post permanently deletes it. Publish or delete only when the user requests that action. Review drafts in the conversation. Read get_post before editing/deleting and pass its version as expected_version. On conflict, fetch and review again; do not blindly retry. If creation times out, list posts before retrying to avoid duplicates.",
+  const server = new McpServer({ name: env.SITE_TITLE, version: "0.1.0" }, {
+    instructions: `Manage the single-author ${env.SITE_TITLE} microblog. create_post immediately publishes publicly; update_post changes a live post; delete_post permanently deletes it. Publish or delete only when the user requests that action. Review drafts in the conversation. Read get_post before editing/deleting and pass its version as expected_version. On conflict, fetch and review again; do not blindly retry. If creation times out, list posts before retrying to avoid duplicates.`,
   });
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const write = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
