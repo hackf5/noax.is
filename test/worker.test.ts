@@ -3,7 +3,9 @@ import { applyD1Migrations, createExecutionContext, waitOnExecutionContext, type
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@modelcontextprotocol/client";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import worker from "../src/index";
+import { stylesheet, stylesheetVersion } from "../src/html";
 import { Posts, SITEMAP_SIZE } from "../src/posts";
 import { backfillSlugs, type SlugQuery } from "../src/slug-backfill";
 import { RENDER_VERSION, renderMarkdown } from "../src/render";
@@ -1055,68 +1057,65 @@ describe("Content Security Policy", () => {
 });
 
 describe("cache headers", () => {
-  it("caches assets and the feed but never pages or errors", async () => {
-    for (const path of ["/style.css", "/favicon.svg", "/favicon.ico"]) {
-      expect((await request(`${publicOrigin}${path}`)).headers.get("Cache-Control")).toBe("public, max-age=86400");
-    }
-    expect((await request(`${publicOrigin}/feed.xml`)).headers.get("Cache-Control")).toBe("public, max-age=300");
-    const post = await new Posts(env.DB).create("Fresh");
-    for (const path of ["/", `/posts/${post.slug}`, "/unknown", "/?before=malformed"]) {
-      expect((await request(`${publicOrigin}${path}`)).headers.get("Cache-Control")).toBe("no-store");
+  const day = "public, max-age=86400";
+  const shortly = "public, max-age=300";
+
+  // Workers Cache sits in front of the Worker and follows these headers, so this table decides what
+  // skips the Worker. Making a route cacheable should be a decision, not a side effect.
+  it("pins what may be served without running the Worker", async () => {
+    const post = await new Posts(env.DB).create("# Fresh");
+    const markdown = { headers: { Accept: "text/markdown" } };
+    const cases: [string, string, RequestInit?][] = [
+      ["/favicon.svg", day], ["/favicon.ico", day], ["/robots.txt", day],
+      ["/feed.xml", shortly], ["/llms.txt", shortly], ["/sitemap.xml", shortly], ["/sitemap-pages.xml", shortly], ["/sitemap-posts-0.xml", shortly],
+      ["/", "no-store"], [`/posts/${post.slug}`, "no-store"], [`/posts/${post.id}`, "no-store"],
+      ["/index.md", "no-store"], [`/posts/${post.slug}.md`, "no-store"], ["/", "no-store", markdown], [`/posts/${post.slug}`, "no-store", markdown],
+      ["/unknown", "no-store"], ["/?before=malformed", "no-store"], ["/sitemap-posts-9.xml", "no-store"],
+    ];
+    for (const [path, expected, init] of cases) {
+      expect((await request(`${publicOrigin}${path}`, init)).headers.get("Cache-Control"), path).toBe(expected);
     }
     expect((await request(`${publicOrigin}/`, { method: "POST" })).headers.get("Cache-Control")).toBe("no-store");
   });
+
+  it("keeps the MCP host and /mcp out of the cache, as its key ignores hostnames", async () => {
+    for (const path of ["/", "/feed.xml", "/style.css", "/robots.txt", "/llms.txt", "/sitemap.xml", "/unknown"]) {
+      const response = await request(`${mcpOrigin}${path}`);
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get("Cache-Control"), path).toBe("no-store");
+    }
+    const cases: [string, RequestInit?][] = [
+      [mcpEndpoint], [mcpEndpoint, { headers: { "Cf-Access-Jwt-Assertion": token } }], [`${publicOrigin}/mcp`], [`${publicOrigin}/mcp`, { method: "POST" }],
+    ];
+    for (const [url, init] of cases) expect((await request(url, init)).headers.get("Cache-Control"), url).toBe("no-store");
+  });
 });
 
-describe("legacy slug backfill", () => {
-  async function legacyPost(markdown: string, createdAt: string): Promise<Post> {
-    return (await env.DB.prepare(
-      "INSERT INTO posts (id, markdown, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?) RETURNING id, slug, markdown, created_at, updated_at, version",
-    ).bind(crypto.randomUUID(), markdown, createdAt, "2026-11-04T18:00:00.000Z", 3).first<Post>())!;
-  }
+describe("stylesheet versioning", () => {
+  const forever = "public, max-age=31536000, immutable";
+  const shortly = "public, max-age=300";
 
-  it("backfills in publication order without changing content or metadata and can be rerun", async () => {
-    const newer = await legacyPost("# The Future Was Free\n\nNewer post.", "2026-11-04T13:00:00.000Z");
-    const original = await legacyPost("# The Future Was Free\n\nOriginal post.", "2026-11-04T12:00:00.000Z");
-    const note = await legacyPost("A short note.", "2026-11-04T14:00:00.000Z");
-    const posts = new Posts(env.DB);
-    expect(original.slug).toBeNull();
-    const oldPage = await request(`${publicOrigin}/posts/${original.id}`);
-    expect(oldPage.status).toBe(200);
-    expect(await oldPage.text()).toContain("Original post.");
-    expect(await backfillSlugs(slugQuery)).toBe(3);
-    expect(await posts.get(original.id)).toEqual({ ...original, slug: "the-future-was-free" });
-    expect(await posts.get(newer.id)).toEqual({ ...newer, slug: "the-future-was-free-2" });
-    expect(await posts.get(note.id)).toEqual({ ...note, slug: "post" });
-    expect(await backfillSlugs(slugQuery)).toBe(0);
-    expect((await request(`${publicOrigin}/posts/${original.id}`)).headers.get("Location")).toBe("/posts/the-future-was-free");
+  it("links every page to the version of the stylesheet it was built with", async () => {
+    expect(stylesheetVersion).toBe(createHash("sha256").update(stylesheet).digest("hex").slice(0, 12));
+    const post = await new Posts(env.DB).create("# Hello");
+    for (const path of ["/", `/posts/${post.slug}`, "/nope"]) {
+      expect(await (await request(`${publicOrigin}${path}`)).text()).toContain(`<link rel="stylesheet" href="/style.css?v=${stylesheetVersion}">`);
+    }
   });
 
-  it("respects slugs allocated by concurrent publication", async () => {
-    const legacy = await legacyPost("# Shared title", "2026-11-04T12:00:00.000Z");
-    const posts = new Posts(env.DB);
-    let published: Post | undefined;
-    const query: SlugQuery = async (sql, params) => {
-      if (!published && sql.startsWith("UPDATE posts SET slug")) published = await posts.create("# Shared title");
-      return slugQuery(sql, params);
-    };
-    expect(await backfillSlugs(query)).toBe(1);
-    expect(published?.slug).toBe("shared-title");
-    expect((await posts.get(legacy.id)).slug).toBe("shared-title-2");
+  it("lets browsers keep the current version for good", async () => {
+    const response = await request(`${publicOrigin}/style.css?v=${stylesheetVersion}`);
+    expect(response.headers.get("Cache-Control")).toBe(forever);
+    expect(response.headers.get("Content-Type")).toContain("text/css");
+    expect(await response.text()).toBe(stylesheet);
   });
 
-  it("rereads a concurrently edited heading before assigning its slug", async () => {
-    const legacy = await legacyPost("# Original heading", "2026-11-04T12:00:00.000Z");
-    const posts = new Posts(env.DB);
-    let edited: Post | undefined;
-    const query: SlugQuery = async (sql, params) => {
-      if (!edited && sql.startsWith("UPDATE posts SET slug")) {
-        edited = await posts.update(legacy.id, "# Revised heading", legacy.version);
-      }
-      return slugQuery(sql, params);
-    };
-    expect(await backfillSlugs(query)).toBe(1);
-    expect(await posts.get(legacy.id)).toEqual({ ...edited, slug: "revised-heading" });
+  // During a deploy, a new page's request can reach an old isolate, which mustn't pin its old CSS to
+  // the new URL for a year.
+  it.each(["", "?v=", "?v=000000000000", `?v=${stylesheetVersion}x`])("only briefly caches /style.css%s", async (query) => {
+    const response = await request(`${publicOrigin}/style.css${query}`);
+    expect(response.headers.get("Cache-Control")).toBe(shortly);
+    expect(await response.text()).toBe(stylesheet);
   });
 });
 

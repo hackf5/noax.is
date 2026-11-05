@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Env, PostPage, PublishedPost } from "./types";
 import { postPath } from "./post-metadata";
 
@@ -55,6 +56,9 @@ nav { margin-block-start: 2rem; }
 .quiet { color: var(--muted); }
 `;
 
+// Changes with the stylesheet, so browsers can keep each version for good and still get new ones.
+export const stylesheetVersion = createHash("sha256").update(stylesheet).digest("hex").slice(0, 12);
+
 function ogTag(property: string, content: string): string {
   return `<meta property="${property}" content="${escapeHtml(content)}">`;
 }
@@ -74,7 +78,7 @@ function layout(site: Site, content: string, meta: PageMeta = {}): string {
     : "";
   const markdown = meta.markdown ? `<link rel="alternate" type="text/markdown" href="${escapeHtml(meta.markdown)}">` : "";
   return `<!doctype html>
-<html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml">${markdown}<link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
+<html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml">${markdown}<link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css?v=${stylesheetVersion}"></head>
 <body><div class="page"><header><h1><a href="/">${escapeHtml(site.title)}</a></h1></header><main>${content}</main></div></body></html>`;
 }
 
