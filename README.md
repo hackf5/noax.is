@@ -122,7 +122,7 @@ Settings live in `.local/site.json`. Run `npm run deploy` after changing them.
 
 If you change `mcp_host`, also update `NOAX_MCP_URL` in `.local/mcp.env` and run `npm run cloudflare:provision`.
 
-For anything else, change the code. It's about 700 lines, and the styling is one stylesheet in `src/html.ts`. Fork the repository if you want to keep those changes.
+For anything else, change the code. It's about 850 lines, and the styling is one stylesheet in `src/html.ts`. Fork the repository if you want to keep those changes.
 
 ## Costs
 
@@ -136,13 +136,15 @@ noax is designed to fit Cloudflare's free plans. The domain is the only thing yo
 | D1 rows written | 100,000 a day |
 | D1 database size | 500 MB |
 
-A page view normally costs one Worker request, as browsers cache the stylesheet and favicons for a day. Posts are rendered when they're written, so reading the site does no Markdown work.
+A page view normally costs one Worker request, as browsers cache the stylesheet and favicons. The stylesheet's URL changes with its content, so browsers can keep it for good and still pick up changes straight away. Posts are rendered when they're written, so reading the site does no Markdown work.
+
+The feed, `llms.txt`, sitemaps, `robots.txt`, the stylesheet and favicons go through [Workers Cache](https://developers.cloudflare.com/workers/cache/), which sits in front of the Worker. A cache hit uses no Worker CPU and no D1 reads, though Cloudflare still bills it as a request, so assume it counts towards the daily limit. Each deploy starts with an empty cache. The feed, `llms.txt` and sitemaps can lag by up to five minutes, so a deleted post can linger in them briefly. Pages and Markdown aren't cached, so edits and deletions show on the next request.
 
 Rendered output is a cache, so posts pick up rendering changes automatically after an update. Each post is rebuilt the first time it's read and saved straight away. On the Free plan, a page of long posts can exceed the CPU limit while this happens and show a Cloudflare error. No work is lost, though, so the page loads after a few refreshes.
 
 If you go over a daily limit on the Free plan, you get errors rather than a bill, and the limits reset at 00:00 UTC. The Worker has no rate limiting of its own, so anyone sending enough requests can use up the day's allowance.
 
-Sitemaps cost more than pages. A full sitemap file reads 1,000 rows and `/sitemap.xml` reads every post, where a page reads about 20. On a blog with thousands of posts, about 5,000 repeat requests would use up the day's D1 reads, and every page would fail until the reset. Cache headers don't prevent this, as the Worker still runs for each request. Sitemaps are split so that each request stays within the CPU limit however many posts there are.
+Sitemaps cost more than pages. A full sitemap file reads 1,000 rows and `/sitemap.xml` reads every post, where a page reads about 20. The cache means repeat requests read D1 about once every five minutes rather than every time, but it isn't a rate limit. The query string and some headers are part of its key, so someone deliberately varying them still reaches D1. On a blog with thousands of posts, about 5,000 such requests would use up the day's D1 reads, and every page would fail until the reset. Sitemaps are split so that each request stays within the CPU limit however many posts there are.
 
 These limits come from Cloudflare's [Workers](https://developers.cloudflare.com/workers/platform/limits/) and [D1](https://developers.cloudflare.com/d1/platform/limits/) documentation. Check there for current figures.
 

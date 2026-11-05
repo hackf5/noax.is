@@ -3,7 +3,7 @@ import faviconIco from "./assets/favicon.ico";
 import faviconSvg from "./assets/favicon.svg";
 import { llmsTxt, pagesSitemap, postsSitemap, robotsTxt, sitemapIndex } from "./discovery";
 import { atomFeed } from "./feed";
-import { errorPage, postPage, siteFrom, stylesheet, timeline } from "./html";
+import { errorPage, postPage, siteFrom, stylesheet, stylesheetVersion, timeline } from "./html";
 import { markdownError, markdownPost, markdownTimeline, preferredText, type TextType } from "./markdown";
 import { handleMcp } from "./mcp";
 import { postPath, UUID_PATTERN } from "./post-metadata";
@@ -18,9 +18,12 @@ const securityHeaders = {
   "Content-Security-Policy": CONTENT_SECURITY_POLICY,
 };
 
-// Pages stay uncached so edits and deletions appear on the next request.
+// Workers Cache follows these and serves public responses without running the Worker. Pages stay
+// uncached so edits and deletions appear on the next request, and because each has its own nonce.
+// The cache's key ignores the hostname, so everything on the MCP host must stay no-store.
 const CACHE_ASSET = "public, max-age=86400";
 const CACHE_FEED = "public, max-age=300";
+const CACHE_IMMUTABLE = "public, max-age=31536000, immutable";
 
 const TYPE_TEXT = "text/plain; charset=utf-8";
 const TYPE_XML = "application/xml; charset=utf-8";
@@ -85,8 +88,12 @@ export default {
     let response: Response;
     try {
       const posts = new Posts(env.DB);
-      if (url.pathname === "/style.css") response = respond(stylesheet, 200, "text/css; charset=utf-8", CACHE_ASSET);
-      else if (url.pathname === "/feed.xml") {
+      if (url.pathname === "/style.css") {
+        // During a deploy a new page's request can reach an old isolate, which mustn't pin old CSS to
+        // the new URL, so only the version this isolate actually has is kept for good.
+        const current = url.searchParams.get("v") === stylesheetVersion;
+        response = respond(stylesheet, 200, "text/css; charset=utf-8", current ? CACHE_IMMUTABLE : CACHE_FEED);
+      } else if (url.pathname === "/feed.xml") {
         response = respond(atomFeed(site, (await posts.listPublished()).posts), 200, "application/atom+xml; charset=utf-8", CACHE_FEED);
       } else if (url.pathname === "/robots.txt") {
         response = respond(robotsTxt(site), 200, TYPE_TEXT, CACHE_ASSET);
