@@ -1,6 +1,10 @@
 import MarkdownIt from "markdown-it";
 import type { Rendered } from "./types";
 
+// Stored posts are a cache of this output. Bump this whenever renderMarkdown's output changes,
+// and posts rebuild as they're read.
+export const RENDER_VERSION = 1;
+
 const TITLE_LENGTH = 70;
 const SUMMARY_LENGTH = 160;
 
@@ -36,7 +40,6 @@ function truncate(text: string, limit: number): string {
   return `${(boundary > limit / 2 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
 }
 
-// A stored post's HTML does not follow later renderer changes; see AGENTS.md.
 export function renderMarkdown(source: string): Rendered {
   const tokens = markdown.parse(source, {});
   const blocks = tokens.filter((token) => token.type === "inline").map(plainText).filter((text) => text.trim());

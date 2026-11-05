@@ -1,4 +1,4 @@
-import { renderMarkdown } from "./render";
+import { RENDER_VERSION, renderMarkdown } from "./render";
 import { PostError, type Post, type PostPage, type PublishedPost, type Rendered } from "./types";
 
 export const PAGE_SIZE = 20;
@@ -7,12 +7,7 @@ export const MAX_MARKDOWN_LENGTH = 64_000;
 // Naming these keeps the rendered columns out of MCP responses.
 const POST_COLUMNS = "id, markdown, created_at, updated_at, version";
 
-type StoredPost = Post & { [key in keyof Rendered]: string | null };
-
-// `== null` also covers a deploy that ran before its migration, when the columns don't exist yet.
-function published(post: StoredPost): PublishedPost {
-  return post.html == null ? { ...post, ...renderMarkdown(post.markdown) } : post as PublishedPost;
-}
+type StoredPost = Post & { [key in keyof Rendered]: string | null } & { render_version: number | null };
 
 export function validateMarkdown(markdown: string): void {
   if (!markdown.trim()) throw new PostError("validation", "Post Markdown must not be empty.");
@@ -37,7 +32,27 @@ function decodeCursor(cursor: string): { created_at: string; id: string } {
 }
 
 export class Posts {
-  constructor(private readonly db: D1Database) {}
+  constructor(
+    private readonly db: D1Database,
+    private readonly render: (markdown: string) => Rendered = renderMarkdown,
+  ) {}
+
+  // Stored output is a cache of the Markdown. A Worker can't see its CPU limit coming, so the save
+  // is awaited: if the Worker is killed, posts already rebuilt stay rebuilt for the next request.
+  private async published(post: StoredPost): Promise<PublishedPost> {
+    if (post.render_version === RENDER_VERSION) return post as PublishedPost;
+    const rendered = this.render(post.markdown);
+    try {
+      // Matching version stops a slow read overwriting a newer edit. This isn't an edit, so version
+      // and updated_at stay as they are.
+      await this.db.prepare(
+        "UPDATE posts SET html = ?, title = ?, summary = ?, render_version = ? WHERE id = ? AND version = ?",
+      ).bind(rendered.html, rendered.title, rendered.summary, RENDER_VERSION, post.id, post.version).run();
+    } catch (error) {
+      console.error("Render cache write failed", error instanceof Error ? error.name : "unknown");
+    }
+    return { ...post, ...rendered };
+  }
 
   private async page<T extends Post>(columns: string, cursor: string | undefined, limit: number): Promise<PostPage<T>> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -65,7 +80,10 @@ export class Posts {
 
   async listPublished(cursor?: string, limit = PAGE_SIZE): Promise<PostPage<PublishedPost>> {
     const page = await this.page<StoredPost>("*", cursor, limit);
-    return { ...page, posts: page.posts.map(published) };
+    const posts: PublishedPost[] = [];
+    // One at a time, so each post is saved before the next is rendered.
+    for (const post of page.posts) posts.push(await this.published(post));
+    return { ...page, posts };
   }
 
   async get(id: string): Promise<Post> {
@@ -77,26 +95,26 @@ export class Posts {
   async getPublished(id: string): Promise<PublishedPost> {
     const post = await this.db.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<StoredPost>();
     if (!post) throw new PostError("not_found", "Post not found.");
-    return published(post);
+    return this.published(post);
   }
 
   async create(markdown: string): Promise<Post> {
     validateMarkdown(markdown);
-    const { html, title, summary } = renderMarkdown(markdown);
+    const { html, title, summary } = this.render(markdown);
     const timestamp = new Date().toISOString();
     const post = await this.db.prepare(
-      `INSERT INTO posts (id, markdown, html, title, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${POST_COLUMNS}`,
-    ).bind(crypto.randomUUID(), markdown, html, title, summary, timestamp, timestamp).first<Post>();
+      `INSERT INTO posts (id, markdown, html, title, summary, render_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${POST_COLUMNS}`,
+    ).bind(crypto.randomUUID(), markdown, html, title, summary, RENDER_VERSION, timestamp, timestamp).first<Post>();
     if (!post) throw new Error("Post insert returned no result.");
     return post;
   }
 
   async update(id: string, markdown: string, expectedVersion: number): Promise<Post> {
     validateMarkdown(markdown);
-    const { html, title, summary } = renderMarkdown(markdown);
+    const { html, title, summary } = this.render(markdown);
     const post = await this.db.prepare(
-      `UPDATE posts SET markdown = ?, html = ?, title = ?, summary = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ? RETURNING ${POST_COLUMNS}`,
-    ).bind(markdown, html, title, summary, new Date().toISOString(), id, expectedVersion).first<Post>();
+      `UPDATE posts SET markdown = ?, html = ?, title = ?, summary = ?, render_version = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ? RETURNING ${POST_COLUMNS}`,
+    ).bind(markdown, html, title, summary, RENDER_VERSION, new Date().toISOString(), id, expectedVersion).first<Post>();
     if (!post) {
       await this.get(id);
       throw new PostError("conflict", "Post changed. Call get_post and review the latest version before editing again.");

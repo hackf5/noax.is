@@ -5,7 +5,8 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { Posts } from "../src/posts";
-import type { Env, Post } from "../src/types";
+import { RENDER_VERSION, renderMarkdown } from "../src/render";
+import type { Env, Post, Rendered } from "../src/types";
 
 const env = runtimeEnv as unknown as Env & { TEST_MIGRATIONS: D1Migration[] };
 const publicOrigin = `https://${env.PUBLIC_HOST}`;
@@ -222,17 +223,43 @@ describe("public reading", () => {
   });
 });
 
-describe("rendering on write", () => {
-  async function insertRow(id: string, markdown: string, html: string | null) {
+describe("render cache", () => {
+  const timestamp = "2026-11-04T12:00:00.000Z";
+  const stale = RENDER_VERSION - 1;
+  const id = "00000000-0000-4000-8000-000000000001";
+  const ids = [1, 2, 3, 4, 5].map((index) => `00000000-0000-4000-8000-00000000000${index}`);
+
+  async function insertRow(rowId: string, markdown: string, html: string | null, renderVersion: number | null) {
     await env.DB.prepare(
-      "INSERT INTO posts (id, markdown, html, title, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).bind(id, markdown, html, html && "Stored title", html && "Stored summary", "2026-11-04T12:00:00.000Z", "2026-11-04T12:00:00.000Z").run();
+      "INSERT INTO posts (id, markdown, html, title, summary, render_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(rowId, markdown, html, html && "Stored title", html && "Stored summary", renderVersion, timestamp, timestamp).run();
   }
 
-  it("stores rendered HTML, escaped, and refreshes it on edit", async () => {
+  async function row(rowId: string) {
+    return (await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(rowId).first<Post & Rendered & { render_version: number | null }>())!;
+  }
+
+  async function currentRows(): Promise<string[]> {
+    const { results } = await env.DB.prepare("SELECT id FROM posts WHERE render_version = ? ORDER BY id").bind(RENDER_VERSION).all<{ id: string }>();
+    return results.map((result) => result.id);
+  }
+
+  // Posts only calls prepare, so this lets a test act around the cache save.
+  function aroundSave(around: (save: () => Promise<unknown>) => Promise<unknown>): D1Database {
+    return {
+      prepare(sql: string) {
+        const statement = env.DB.prepare(sql);
+        if (!sql.startsWith("UPDATE posts SET html")) return statement;
+        return { bind: (...values: unknown[]) => ({ run: () => around(() => statement.bind(...values).run()) }) };
+      },
+    } as unknown as D1Database;
+  }
+
+  it("stores rendered HTML, escaped, with the current version, and refreshes it on edit", async () => {
     const posts = new Posts(env.DB);
     const post = await posts.create("# Title\n\n<script>alert(1)</script>");
-    const stored = await posts.getPublished(post.id);
+    const stored = await row(post.id);
+    expect(stored.render_version).toBe(RENDER_VERSION);
     expect(stored.html).toContain("<h2>Title</h2>");
     expect(stored.html).toContain("&lt;script&gt;");
     expect(stored.html).not.toContain("<script>");
@@ -240,23 +267,116 @@ describe("rendering on write", () => {
     expect(await posts.getPublished(post.id)).toMatchObject({ title: "New title", summary: "New body." });
   });
 
-  it("serves stored HTML without rendering the Markdown again", async () => {
-    const id = "00000000-0000-4000-8000-000000000001";
-    await insertRow(id, "**from markdown**", "<p>from stored html</p>");
+  it("serves current output without calling the renderer", async () => {
+    await insertRow(id, "**from markdown**", "<p>from stored html</p>", RENDER_VERSION);
     for (const url of [`${publicOrigin}/`, `${publicOrigin}/posts/${id}`]) {
       const html = await (await request(url)).text();
       expect(html).toContain("from stored html");
       expect(html).not.toContain("from markdown");
     }
+    const render = vi.fn(renderMarkdown);
+    const posts = new Posts(env.DB, render);
+    await posts.listPublished();
+    await posts.getPublished(id);
+    expect(render).not.toHaveBeenCalled();
   });
 
-  it("renders rows from before the migration on read", async () => {
-    const id = "00000000-0000-4000-8000-000000000002";
-    await insertRow(id, "# Old post\n\nOld **body**.", null);
+  it("rebuilds output from another renderer version without touching the post's version or dates", async () => {
+    await insertRow(id, "**new output**", "<p>old output</p>", stale);
+    const html = await (await request(`${publicOrigin}/posts/${id}`)).text();
+    expect(html).toContain("<strong>new output</strong>");
+    expect(html).not.toContain("old output");
+    expect(await row(id)).toMatchObject({
+      html: "<p><strong>new output</strong></p>\n", title: "new output", render_version: RENDER_VERSION, version: 1, updated_at: timestamp,
+    });
+  });
+
+  it("rebuilds after a rollback too, so any different version counts as stale", async () => {
+    await insertRow(id, "**new output**", "<p>from a newer renderer</p>", RENDER_VERSION + 1);
+    expect((await new Posts(env.DB).getPublished(id)).html).toContain("<strong>new output</strong>");
+    expect((await row(id)).render_version).toBe(RENDER_VERSION);
+  });
+
+  it("rebuilds and saves rows from before the migration", async () => {
+    await insertRow(id, "# Old post\n\nOld **body**.", null, null);
     const html = await (await request(`${publicOrigin}/posts/${id}`)).text();
     expect(html).toContain("<strong>body</strong>");
     expect(html).toContain("<title>Old post · Test Blog</title>");
-    expect(await (await request(`${publicOrigin}/feed.xml`)).text()).toContain("<title>Old post</title>");
+    expect(await row(id)).toMatchObject({ title: "Old post", summary: "Old body.", render_version: RENDER_VERSION });
+  });
+
+  it.each(["/", "/feed.xml", `/posts/${id}`])("heals the cache when %s is read", async (path) => {
+    await insertRow(id, "Fresh output", "<p>old output</p>", stale);
+    const body = await (await request(`${publicOrigin}${path}`)).text();
+    expect(body).toContain("Fresh output");
+    expect(body).not.toContain("old output");
+    expect((await row(id)).render_version).toBe(RENDER_VERSION);
+  });
+
+  it("keeps posts already rebuilt when a request dies partway through", async () => {
+    for (const rowId of ids) await insertRow(rowId, `Post ${rowId}`, "<p>old output</p>", stale);
+    let calls = 0;
+    const dying = new Posts(env.DB, (markdown) => {
+      calls += 1;
+      if (calls === 4) throw new Error("Simulated CPU limit");
+      return renderMarkdown(markdown);
+    });
+    await expect(dying.listPublished()).rejects.toThrow("Simulated CPU limit");
+    // The page is newest first, which is highest id first here.
+    expect(await currentRows()).toEqual(ids.slice(2));
+
+    const render = vi.fn(renderMarkdown);
+    const page = await new Posts(env.DB, render).listPublished();
+    expect(render.mock.calls.map(([markdown]) => markdown)).toEqual([`Post ${ids[1]}`, `Post ${ids[0]}`]);
+    expect(page.posts.map((post) => post.html).join("")).not.toContain("old output");
+    expect(await currentRows()).toEqual(ids);
+
+    render.mockClear();
+    await new Posts(env.DB, render).listPublished();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("finishes saving each post before rendering the next", async () => {
+    for (const rowId of ids.slice(0, 3)) await insertRow(rowId, "Post", "<p>old output</p>", stale);
+    const log: string[] = [];
+    const posts = new Posts(aroundSave(async (save) => {
+      const result = await save();
+      log.push("saved");
+      return result;
+    }), (markdown) => {
+      log.push("rendered");
+      return renderMarkdown(markdown);
+    });
+    await posts.listPublished();
+    expect(log).toEqual(["rendered", "saved", "rendered", "saved", "rendered", "saved"]);
+  });
+
+  it("doesn't overwrite an edit that lands during a rebuild", async () => {
+    await insertRow(id, "Old text", "<p>old output</p>", stale);
+    const posts = new Posts(aroundSave(async (save) => {
+      await new Posts(env.DB).update(id, "Newer edit", 1);
+      return save();
+    }));
+    await posts.getPublished(id);
+    expect(await row(id)).toMatchObject({ markdown: "Newer edit", html: "<p>Newer edit</p>\n", title: "Newer edit", version: 2 });
+  });
+
+  it("still serves the page if the cache can't be saved", async () => {
+    await insertRow(id, "Fresh output", "<p>old output</p>", stale);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const posts = new Posts(aroundSave(async () => { throw new Error("D1 unavailable"); }));
+    expect((await posts.getPublished(id)).html).toContain("Fresh output");
+    expect(logged).toHaveBeenCalledWith("Render cache write failed", "Error");
+    logged.mockRestore();
+    expect((await row(id)).render_version).toBe(stale);
+  });
+
+  it("stores the current version when a stale post is edited through MCP", async () => {
+    await insertRow(id, "Original", "<p>old output</p>", stale);
+    await withClient(async (client) => {
+      postFrom(await call(client, "update_post", { id, markdown: "Edited", expected_version: 1 }));
+    });
+    expect(await row(id)).toMatchObject({ html: "<p>Edited</p>\n", render_version: RENDER_VERSION });
   });
 
   it("keeps rendered columns out of MCP responses", async () => {
@@ -268,6 +388,39 @@ describe("rendering on write", () => {
       const { posts } = (await call(client, "list_posts", {})).structuredContent as { posts: Post[] };
       expect(Object.keys(posts[0]!).sort()).toEqual(expected);
     });
+  });
+});
+
+describe("renderer output", () => {
+  const sample = [
+    "# Heading one", "", "## Heading two", "", "###### Heading six", "",
+    'Text with **bold**, *emphasis*, `code` and a [link](https://example.com "Title").  ', "A hard break.", "",
+    "> A quote", "", "- bullet", "", "1. number", "", "---", "",
+    "```js", 'const x = "<tag>";', "```", "", "    indented", "",
+    "<b>raw</b> and ![image](https://example.com/a.png) and [unsafe](javascript:alert(1))",
+  ].join("\n");
+
+  // One entry per RENDER_VERSION. If this fails because you changed the renderer, bump RENDER_VERSION
+  // and add a new entry, so stored posts rebuild. Don't edit an existing entry.
+  const expectedOutput: Record<number, Rendered> = {
+    1: {
+      html: [
+        "<h2>Heading one</h2>", "<h3>Heading two</h3>", "<h6>Heading six</h6>",
+        '<p>Text with <strong>bold</strong>, <em>emphasis</em>, <code>code</code> and a <a href="https://example.com" title="Title">link</a>.<br />',
+        "A hard break.</p>", "<blockquote>", "<p>A quote</p>", "</blockquote>",
+        "<ul>", "<li>bullet</li>", "</ul>", "<ol>", "<li>number</li>", "</ol>", "<hr />",
+        '<pre tabindex="0"><code class="language-js">const x = &quot;&lt;tag&gt;&quot;;', "</code></pre>",
+        '<pre tabindex="0"><code>indented', "</code></pre>",
+        '<p>&lt;b&gt;raw&lt;/b&gt; and !<a href="https://example.com/a.png">image</a> and [unsafe](javascript:alert(1))</p>',
+        "",
+      ].join("\n"),
+      title: "Heading one",
+      summary: "Heading two Heading six Text with bold, emphasis, code and a link. A hard break. A quote bullet number <b>raw</b> and !image and [unsafe](javascript:alert(1))",
+    },
+  };
+
+  it("matches the recorded output for the current RENDER_VERSION", () => {
+    expect(renderMarkdown(sample), "Rendered output changed: bump RENDER_VERSION in src/render.ts and add a new entry here.").toEqual(expectedOutput[RENDER_VERSION]);
   });
 });
 

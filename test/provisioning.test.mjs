@@ -39,7 +39,7 @@ describe("site configuration", () => {
   });
 
   it("derives the names the original noax.is deployment already uses", () => {
-    assert.deepEqual(resourceNames(validateSite({ public_host: "noax.is" })), {
+    assert.deepEqual(resourceNames(validateSite({ public_host: "noax.is", title: "A different title" })), {
       worker: "noax-is",
       database: "noax-is",
       accessApplication: "noax.is publishing",

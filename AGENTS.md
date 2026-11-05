@@ -48,6 +48,6 @@ Then you can do the rest:
 - Run `npm run db:migrate:local` before `npm run dev`. Local publishing is tested through the authenticated integration suite; production Access authentication is never disabled for local development.
 - Public routes must never dispatch MCP operations. All deployed MCP requests require a verified Cloudflare Access JWT.
 - Keep instance data out of tracked files. `wrangler.jsonc` is a local development config; production values are generated into `.local/wrangler.deploy.jsonc` by `scripts/site-config.mjs`.
-- HTML, titles and summaries are stored when a post is written. A renderer change in `src/render.ts` doesn't reach existing posts, so it must ship with a step that re-renders them.
+- Stored HTML, titles and summaries are a cache of the Markdown. Bump `RENDER_VERSION` in `src/render.ts` whenever rendered output changes; posts then rebuild as they're read.
 - `.local/`, `.dev.vars`, and environment files contain credentials and must stay ignored. Never print token values or commit them.
 - Provisioning must not overwrite another Worker's domain bindings or broaden existing Access policies.

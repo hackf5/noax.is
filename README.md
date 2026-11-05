@@ -110,6 +110,8 @@ noax is designed to fit Cloudflare's free plans. The domain is the only thing yo
 
 A page view normally costs one Worker request, as browsers cache the stylesheet and favicons for a day. Posts are rendered when they're written, so reading the site does no Markdown work.
 
+Rendered output is a cache, so posts pick up rendering changes automatically after an update. Each post is rebuilt the first time it's read and saved straight away. On the Free plan, a page of long posts can exceed the CPU limit while this happens and show a Cloudflare error. No work is lost, though, so the page loads after a few refreshes.
+
 If you go over a daily limit on the Free plan, you get errors rather than a bill, and the limits reset at 00:00 UTC. The Worker has no rate limiting of its own, so anyone sending enough requests can use up the day's allowance.
 
 These limits come from Cloudflare's [Workers](https://developers.cloudflare.com/workers/platform/limits/) and [D1](https://developers.cloudflare.com/d1/platform/limits/) documentation. Check there for current figures.
