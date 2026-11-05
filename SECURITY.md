@@ -10,7 +10,7 @@ Please report vulnerabilities privately through the repository's **Security** ta
 - **Public routes** are read-only and never dispatch MCP operations.
 - **The Worker holds no Cloudflare API token.** The provisioning token is only used from your machine, and can be deleted after setup.
 - **Credentials** stay in the ignored `.local/` directory. MCP client configs are generated next to them, so a clone can't send your credentials to a hostname you didn't configure.
-- **Post HTML** comes only from the Markdown renderer, with raw HTML and images disabled. Pages use a strict Content Security Policy. HTML responses allow same-origin scripts and those carrying a nonce generated for that response, which exists for the script Cloudflare injects.
+- **Post HTML** comes only from the Markdown renderer, with raw HTML and images disabled. Pages use a strict Content Security Policy. HTML responses allow same-origin scripts, those carrying a nonce generated for that response, and same-origin connections, which all exist for the script Cloudflare injects.
 - **Database access** uses prepared statements throughout.
 
 ## In scope

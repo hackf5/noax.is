@@ -35,11 +35,12 @@ function respond(body: BodyInit | null, status = 200, type = "text/html; charset
 // Every page exists as HTML and Markdown, so both say they depend on Accept. Our HTML has no scripts,
 // but Cloudflare injects bot detection into it and copies the nonce from this header onto its scripts.
 // It only reads the header, so this can't move to a <meta> tag, and pages must stay no-store so a
-// nonce is never reused. Cache-Control: no-transform would stop the injection.
+// nonce is never reused. Cache-Control: no-transform would stop the injection. connect-src is there
+// because its script posts its result to /cdn-cgi/challenge-platform/.
 function htmlPage(body: string, status = 200, markdownPath?: string): Response {
   const response = respond(body, status);
   const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
-  response.headers.set("Content-Security-Policy", `${CONTENT_SECURITY_POLICY}; script-src 'self' 'nonce-${nonce}'`);
+  response.headers.set("Content-Security-Policy", `${CONTENT_SECURITY_POLICY}; script-src 'self' 'nonce-${nonce}'; connect-src 'self'`);
   response.headers.set("Vary", "Accept");
   if (markdownPath) response.headers.set("Link", `<${markdownPath}>; rel="alternate"; type="text/markdown"`);
   return response;

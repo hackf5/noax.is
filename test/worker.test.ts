@@ -1018,6 +1018,7 @@ describe("Content Security Policy", () => {
     for (const directive of restrictions) expect(value).toContain(directive);
     for (const loose of ["unsafe-inline", "unsafe-eval", "strict-dynamic", "script-src-elem", "*", "http:", "https:"]) expect(value).not.toContain(loose);
     expect(value.match(/script-src/g)).toHaveLength(1);
+    expect(value).toContain("connect-src 'self'");
   });
 
   it("uses the header alone, with nothing in the HTML for a nonce to cover", async () => {
@@ -1037,6 +1038,7 @@ describe("Content Security Policy", () => {
       const value = policy(await request(`${publicOrigin}${path}`, init));
       expect(value).toContain("default-src 'none'");
       expect(value).not.toContain("script-src");
+      expect(value).not.toContain("connect-src");
       expect(value).not.toContain("nonce");
     }
   });
