@@ -1,3 +1,0 @@
-[mcp_servers.noax]
-url = "https://mcp.noax.is/mcp"
-http_headers_helper = "node scripts/mcp-headers.mjs"

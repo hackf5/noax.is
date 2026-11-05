@@ -2,14 +2,22 @@ import { readFile } from "node:fs/promises";
 import { parseEnv } from "node:util";
 import { pathToFileURL } from "node:url";
 
-export async function getMcpHeaders() {
-  let credentials;
+async function readCredentials() {
   try {
-    credentials = parseEnv(await readFile(new URL("../.local/mcp.env", import.meta.url), "utf8"));
+    return parseEnv(await readFile(new URL("../.local/mcp.env", import.meta.url), "utf8"));
   } catch {
     throw new Error("Cannot read Noax publishing credentials. Restore .local/mcp.env in this checkout.");
   }
+}
 
+export async function getMcpUrl() {
+  const { NOAX_MCP_URL: value } = await readCredentials();
+  if (!value) throw new Error("Set NOAX_MCP_URL in .local/mcp.env.");
+  return new URL(value);
+}
+
+export async function getMcpHeaders() {
+  const credentials = await readCredentials();
   const headers = {};
   for (const [header, variable] of [
     ["CF-Access-Client-Id", "NOAX_ACCESS_CLIENT_ID"],

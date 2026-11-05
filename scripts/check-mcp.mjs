@@ -1,11 +1,29 @@
 import assert from "node:assert/strict";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { getMcpHeaders } from "./mcp-headers.mjs";
+import { readFile } from "node:fs/promises";
+import { getMcpHeaders, getMcpUrl } from "./mcp-headers.mjs";
+import { daysUntil } from "./provisioning.mjs";
 
-const url = new URL("https://mcp.noax.is/mcp");
-const client = new Client({ name: "noax-is-connection-check", version: "0.1.0" });
+const EXPIRY_WARNING_DAYS = 30;
+
+async function warnAboutExpiry() {
+  let expiry;
+  try {
+    expiry = JSON.parse(await readFile(new URL("../.local/provisioning.json", import.meta.url), "utf8")).access_service_token_expires_at;
+  } catch {
+    return;
+  }
+  if (!expiry) return;
+  const days = daysUntil(expiry);
+  if (days < 0) console.error(`The Access service token expired on ${expiry}. Run npm run cloudflare:rotate.`);
+  else if (days <= EXPIRY_WARNING_DAYS) console.warn(`The Access service token expires in ${days} days. Run npm run cloudflare:rotate.`);
+}
+
+const client = new Client({ name: "noax-connection-check", version: "0.1.0" });
 let headers;
 try {
+  await warnAboutExpiry();
+  const url = await getMcpUrl();
   headers = await getMcpHeaders();
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers, redirect: "error" },

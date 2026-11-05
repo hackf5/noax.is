@@ -1,21 +1,30 @@
 {
-  "name": "noax-is",
+  "name": "noax",
   "version": "0.1.0",
+  "description": "A minimal single-author microblog: one Cloudflare Worker, one D1 database and five MCP publishing tools.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hackf5/noax.is.git"
+  },
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "dev": "wrangler dev --infer-origin-from-routes=false --var PUBLIC_HOST:localhost",
-    "db:migrate:local": "wrangler d1 migrations apply noax-is --local",
-    "db:migrate:remote": "node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js d1 migrations apply noax-is --remote",
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "npm run -s site:config && node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --remote --config .local/wrangler.deploy.jsonc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test \"test/*.test.mjs\"",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "deploy": "node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js deploy",
+    "setup": "npm run -s cloudflare:provision && npm run -s db:migrate:remote && npm run -s deploy && npm run -s mcp:check",
+    "site:config": "node scripts/site-config.mjs",
+    "deploy": "npm run -s site:config && node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js deploy --config .local/wrangler.deploy.jsonc",
     "cloudflare:inspect": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs inspect",
     "cloudflare:provision": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs provision",
+    "cloudflare:rotate": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs rotate",
     "mcp:check": "node scripts/check-mcp.mjs",
     "smoke": "node --env-file=.local/mcp.env scripts/smoke.mjs"
   },
