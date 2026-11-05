@@ -52,6 +52,17 @@ try {
   assert.match(await (await fetch(`${origin}/sitemap.xml`)).text(), /sitemap-pages\.xml/);
   assert.equal((await fetch(`${origin}/llms.txt`)).status, 200);
   console.log("Markdown negotiation, robots.txt, the sitemap index and llms.txt passed.");
+  // Cloudflare only injects scripts at the edge, so only a live check can match them to the header.
+  const nonces = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await fetch(created.url);
+    const nonce = /'nonce-([^']+)'/.exec(response.headers.get("Content-Security-Policy"))?.[1];
+    assert.ok(nonce, "HTML has no script nonce in its Content-Security-Policy header");
+    for (const [tag] of (await response.text()).matchAll(/<script\b[^>]*>/g)) assert.ok(tag.includes(`nonce="${nonce}"`), `Script doesn't carry the response's nonce: ${tag}`);
+    nonces.push(nonce);
+  }
+  assert.notEqual(nonces[0], nonces[1], "Two HTML responses shared a nonce");
+  console.log("Per-response script nonces passed.");
   const updated = (await call("update_post", { id: created.id, markdown: `${marker}\n\nEdited successfully.`, expected_version: created.version })).post;
   assert.equal(updated.version, 2);
   assert.equal(updated.created_at, created.created_at);
