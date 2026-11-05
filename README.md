@@ -59,7 +59,7 @@ npm run setup
 
 `npm run setup` creates the Access application, service token and D1 database, applies migrations, deploys the Worker and checks the connection. It's safe to run again, and it stops rather than take over a hostname that belongs to another Worker. Run `npm run cloudflare:inspect` first if you'd like to see what's on the account; it changes nothing.
 
-If the final check fails on a first deploy, the new hostname's certificate may not be ready. Wait a few minutes and run `npm run mcp:check`.
+If the final check says `fetch failed` on a first deploy, everything else is already done and the new hostname just isn't reachable from your machine yet. Its certificate usually takes a couple of minutes, but the check can run before the DNS record exists, and your machine may then remember that for up to 30 minutes. Wait, then run `npm run mcp:check`.
 
 Coding agents can do most of this for you. `AGENTS.md` explains which steps need you and which they can run.
 

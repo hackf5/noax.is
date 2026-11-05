@@ -29,7 +29,7 @@ Then you can do the rest:
 1. Copy `site.example.json` to `.local/site.json` and fill in the author's hostnames, title, description and locale.
 2. Run `npm run cloudflare:inspect` and report anything that looks like a conflict. It changes nothing.
 3. With the author's agreement, run `npm run setup`. It provisions Cloudflare resources and deploys a public site.
-4. If `mcp:check` fails straight after a first deploy, the new hostname's certificate may not be ready. Wait a few minutes and run `npm run mcp:check` again.
+4. If `mcp:check` says `fetch failed` straight after a first deploy, the new hostname isn't reachable yet. Its certificate usually takes a couple of minutes, but this machine's resolver can remember the missing DNS record for up to 30 minutes. Wait and run `npm run mcp:check` again, and don't rerun provisioning.
 5. Tell the author to start a fresh harness session, as the MCP configuration has just been generated. Offer to help write `EDITORIAL.md`, starting from `EDITORIAL.example.md`.
 
 ## Harness connection
