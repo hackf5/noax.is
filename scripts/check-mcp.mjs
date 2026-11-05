@@ -46,6 +46,9 @@ try {
   let message = error.message;
   for (const value of Object.values(headers ?? {})) message = message.replaceAll(value, "[redacted]");
   console.error(`Noax connection check failed: ${message}`);
+  if (message === "fetch failed") {
+    console.error("The hostname may not be reachable yet. After a first deploy, this machine can take up to 30 minutes to see it. Wait, then run npm run mcp:check.");
+  }
   process.exitCode = 1;
 } finally {
   await client.close();
