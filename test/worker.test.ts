@@ -989,6 +989,69 @@ describe("agent discovery", () => {
   });
 });
 
+describe("Content Security Policy", () => {
+  const restrictions = ["default-src 'none'", "style-src 'self'", "img-src 'self'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'none'"];
+  const policy = (response: Response) => response.headers.get("Content-Security-Policy") ?? "";
+  const nonceIn = (response: Response) => /script-src 'self' 'nonce-([A-Za-z0-9+/]+={0,2})'/.exec(policy(response))?.[1];
+
+  it("gives each HTML response its own nonce of at least 16 random bytes", async () => {
+    const post = await new Posts(env.DB).create("# Hello");
+    for (const path of ["/", `/posts/${post.slug}`, "/nope", "/?before=malformed"]) {
+      const nonces = await Promise.all(Array.from({ length: 5 }, async () => nonceIn(await request(`${publicOrigin}${path}`))));
+      expect(new Set(nonces).size).toBe(5);
+      for (const nonce of nonces) expect(atob(nonce!).length).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  it("adds it to the header for HEAD and server errors too, as Cloudflare reads it there", async () => {
+    expect(nonceIn(await request(`${publicOrigin}/`, { method: "HEAD" }))).toBeDefined();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = { ...env, DB: { prepare() { throw new Error("D1 unavailable"); } } } as unknown as Env;
+    const failed = await worker.fetch(new Request(`${publicOrigin}/`), broken, createExecutionContext());
+    logged.mockRestore();
+    expect(failed.status).toBe(500);
+    expect(nonceIn(failed)).toBeDefined();
+  });
+
+  it("keeps every existing restriction and allows nothing looser for scripts", async () => {
+    const value = policy(await request(`${publicOrigin}/`));
+    for (const directive of restrictions) expect(value).toContain(directive);
+    for (const loose of ["unsafe-inline", "unsafe-eval", "strict-dynamic", "script-src-elem", "*", "http:", "https:"]) expect(value).not.toContain(loose);
+    expect(value.match(/script-src/g)).toHaveLength(1);
+  });
+
+  it("uses the header alone, with nothing in the HTML for a nonce to cover", async () => {
+    const html = await (await request(`${publicOrigin}/`)).text();
+    expect(html).not.toContain("http-equiv");
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("nonce");
+  });
+
+  it("gives non-HTML responses no script permission at all", async () => {
+    const post = await new Posts(env.DB).create("# Hello");
+    const markdown = { headers: { Accept: "text/markdown" } };
+    for (const [path, init] of [
+      ["/style.css"], ["/favicon.svg"], ["/feed.xml"], ["/robots.txt"], ["/llms.txt"], ["/sitemap.xml"], ["/sitemap-pages.xml"],
+      ["/index.md"], [`/posts/${post.slug}.md`], ["/", markdown], [`/posts/${post.slug}`, markdown], ["/nope", markdown],
+    ] as [string, RequestInit?][]) {
+      const value = policy(await request(`${publicOrigin}${path}`, init));
+      expect(value).toContain("default-src 'none'");
+      expect(value).not.toContain("script-src");
+      expect(value).not.toContain("nonce");
+    }
+  });
+
+  it("never lets a nonce be reused from a cache", async () => {
+    const post = await new Posts(env.DB).create("# Hello");
+    for (const path of ["/", `/posts/${post.slug}`, "/nope"]) {
+      const response = await request(`${publicOrigin}${path}`);
+      expect(nonceIn(response)).toBeDefined();
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.has("ETag")).toBe(false);
+    }
+  });
+});
+
 describe("cache headers", () => {
   it("caches assets and the feed but never pages or errors", async () => {
     for (const path of ["/style.css", "/favicon.svg", "/favicon.ico"]) {

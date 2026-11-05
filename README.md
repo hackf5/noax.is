@@ -14,7 +14,7 @@ Stop reading now and point the agent at this page. It will take it from here.
 
 ## How it works
 
-- **The public site** is server-rendered HTML with no JavaScript, a strict Content Security Policy and an Atom feed at `/feed.xml`.
+- **The public site** is server-rendered HTML with a strict Content Security Policy and an Atom feed at `/feed.xml`.
 - **Agents** can read every page as Markdown, and find their way around with `/llms.txt`, `/robots.txt` and `/sitemap.xml`.
 - **Publishing** happens through a private MCP endpoint on its own hostname, protected by Cloudflare Access.
 - **Posts** are Markdown stored in D1, not in Git, so publishing needs no deploy. Creating a post publishes it immediately.
@@ -221,7 +221,7 @@ The tests cover the full MCP protocol with generated signing keys, and provision
 
 ## Scope
 
-Minimalism is the point. noax has no dashboard, drafts, comments, images, tags, search, multiple authors or client-side JavaScript, and it isn't likely to gain them. Bug fixes and changes that make it smaller or easier to run are very welcome. Please open an issue before starting anything larger.
+Minimalism is the point. noax has no dashboard, drafts, comments, images, tags, search or multiple authors, and it isn't likely to gain them. Bug fixes and changes that make it smaller or easier to run are very welcome. Please open an issue before starting anything larger.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 

@@ -49,6 +49,7 @@ Then you can do the rest:
 - Public routes must never dispatch MCP operations. All deployed MCP requests require a verified Cloudflare Access JWT.
 - Keep instance data out of tracked files. `wrangler.jsonc` is a local development config; production values are generated into `.local/wrangler.deploy.jsonc` by `scripts/site-config.mjs`.
 - Every page must exist as HTML and Markdown. Build responses with `htmlPage` and `markdownPage` in `src/index.ts`; `respond()` defaults to HTML, so never pass it Markdown without a type.
+- HTML responses carry a fresh script nonce in the `Content-Security-Policy` header for the script Cloudflare injects. Keep HTML `no-store` so a nonce is never reused, and don't add `no-transform`, which stops the injection.
 - Sitemaps and the Markdown timeline must never render, and a sitemap response must stay bounded by `SITEMAP_SIZE`, so a request's CPU doesn't grow with the number of posts. Write `SITEMAP_SIZE` into the SQL rather than binding it.
 - Stored HTML, titles and summaries are a cache of the Markdown. Bump `RENDER_VERSION` in `src/render.ts` whenever rendered output changes; posts then rebuild as they're read.
 - `.local/`, `.dev.vars`, and environment files contain credentials and must stay ignored. Never print token values or commit them.

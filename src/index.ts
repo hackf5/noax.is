@@ -10,10 +10,12 @@ import { postPath, UUID_PATTERN } from "./post-metadata";
 import { Posts } from "./posts";
 import { PostError, type Env } from "./types";
 
+const CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+
 const securityHeaders = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  "Content-Security-Policy": CONTENT_SECURITY_POLICY,
 };
 
 // Pages stay uncached so edits and deletions appear on the next request.
@@ -30,9 +32,14 @@ function respond(body: BodyInit | null, status = 200, type = "text/html; charset
   return new Response(body, { status, headers: { ...securityHeaders, "Cache-Control": cache, "Content-Type": type } });
 }
 
-// Every page exists as HTML and Markdown, so both say they depend on Accept.
+// Every page exists as HTML and Markdown, so both say they depend on Accept. Our HTML has no scripts,
+// but Cloudflare injects bot detection into it and copies the nonce from this header onto its scripts.
+// It only reads the header, so this can't move to a <meta> tag, and pages must stay no-store so a
+// nonce is never reused. Cache-Control: no-transform would stop the injection.
 function htmlPage(body: string, status = 200, markdownPath?: string): Response {
   const response = respond(body, status);
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  response.headers.set("Content-Security-Policy", `${CONTENT_SECURITY_POLICY}; script-src 'self' 'nonce-${nonce}'`);
   response.headers.set("Vary", "Accept");
   if (markdownPath) response.headers.set("Link", `<${markdownPath}>; rel="alternate"; type="text/markdown"`);
   return response;
