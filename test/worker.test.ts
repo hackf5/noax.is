@@ -310,13 +310,50 @@ describe("public reading", () => {
     const posts = new Posts(env.DB);
     expect((await posts.create("# Café!")).slug).toBe("cafe");
     expect((await posts.create("# Cafe?")).slug).toBe("cafe-2");
-    const concurrent = await Promise.all(Array.from({ length: 4 }, () => posts.create("# Shared title")));
+    const concurrent = await Promise.all(Array.from({ length: 12 }, () => posts.create("# Shared title")));
     expect(concurrent.map((post) => post.slug).sort()).toEqual([
-      "shared-title", "shared-title-2", "shared-title-3", "shared-title-4",
-    ]);
+      "shared-title", ...Array.from({ length: 11 }, (_, index) => `shared-title-${index + 2}`),
+    ].sort());
     for (const post of concurrent) {
       expect((await request(`${publicOrigin}/posts/${post.slug}`)).status).toBe(200);
     }
+  });
+
+  async function insertSlugs(slugs: string[]) {
+    if (slugs.length) await env.DB.batch(slugs.map((slug) => env.DB.prepare(
+      "INSERT INTO posts (id, slug, markdown, created_at, updated_at) VALUES (?, ?, 'Post', ?, ?)",
+    ).bind(crypto.randomUUID(), slug, "2026-11-04T12:00:00.000Z", "2026-11-04T12:00:00.000Z")));
+  }
+
+  it("publishes in one query however many posts share a title", async () => {
+    await insertSlugs(["post", ...Array.from({ length: 59 }, (_, index) => `post-${index + 2}`)]);
+    // Counts executions, as one prepared statement can run many times. Local D1 doesn't enforce the limit.
+    let queries = 0;
+    const counting = {
+      prepare(sql: string) {
+        const statement = env.DB.prepare(sql);
+        return { bind: (...values: unknown[]) => ({ first: () => { queries += 1; return statement.bind(...values).first(); } }) };
+      },
+    } as unknown as D1Database;
+    const post = await new Posts(counting).create("A note with no heading.");
+    expect(post.slug).toBe("post-61");
+    expect(queries).toBe(1);
+  });
+
+  it.each<[string, string[], string, string]>([
+    ["a new title", [], "# Post", "post"],
+    ["the first duplicate", ["post"], "# Post", "post-2"],
+    ["a headingless post", ["post", "post-2"], "No heading.", "post-3"],
+    ["slugs that only share a prefix", ["post", "post-mortem", "postal-notes"], "# Post", "post-2"],
+    ["a free base with numbered duplicates", ["post-2"], "# Post", "post"],
+    ["a deleted duplicate", ["post", "post-3"], "# Post", "post-4"],
+    ["a base ending in digits", ["week-12", "week-12-2"], "# Week 12", "week-12-3"],
+    ["a digit run too long to be a suffix", ["post", "post-99999999999999999999"], "# Post", "post-2"],
+  ])("allocates a slug given %s", async (_name, existing, markdown, expected) => {
+    await insertSlugs(existing);
+    const post = await new Posts(env.DB).create(markdown);
+    expect(post.slug).toBe(expected);
+    expect((await request(`${publicOrigin}/posts/${post.slug}`)).status).toBe(200);
   });
 
   it("keeps UUID-shaped headings out of the legacy URL namespace", async () => {
