@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])$/;
+const CONTENT_SIGNAL = /^[a-z-]+=(yes|no)(, [a-z-]+=(yes|no))*$/;
 
 export const paths = {
   base: new URL("wrangler.jsonc", root),
@@ -27,6 +28,7 @@ export function validateSite(input) {
     title: input.title ?? publicHost,
     description: input.description ?? `Notes on ${input.title ?? publicHost}`,
     locale: input.locale ?? "en",
+    content_signal: input.content_signal ?? "search=yes, ai-input=yes",
   };
   if (typeof site.mcp_host !== "string" || !HOSTNAME.test(site.mcp_host) || site.mcp_host === publicHost) {
     throw new Error("Set mcp_host in .local/site.json to a hostname different from public_host.");
@@ -38,6 +40,10 @@ export function validateSite(input) {
     new Intl.DateTimeFormat(site.locale);
   } catch {
     throw new Error(`locale in .local/site.json is not a valid language tag: ${site.locale}`);
+  }
+  // This goes straight into robots.txt, so it mustn't be able to add lines of its own.
+  if (typeof site.content_signal !== "string" || !CONTENT_SIGNAL.test(site.content_signal)) {
+    throw new Error("Set content_signal in .local/site.json to pairs such as search=yes, ai-input=yes.");
   }
   return site;
 }
@@ -81,6 +87,7 @@ export function buildDeployConfig(base, site, provisioning) {
       SITE_TITLE: site.title,
       SITE_DESCRIPTION: site.description,
       SITE_LOCALE: site.locale,
+      SITE_CONTENT_SIGNAL: site.content_signal,
     },
     d1_databases: [{
       ...database,

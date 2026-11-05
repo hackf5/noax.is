@@ -22,6 +22,7 @@ describe("site configuration", () => {
       title: "blog.example.com",
       description: "Notes on blog.example.com",
       locale: "en",
+      content_signal: "search=yes, ai-input=yes",
     });
   });
 
@@ -32,6 +33,9 @@ describe("site configuration", () => {
     assert.throws(() => validateSite({ public_host: "a.example", mcp_host: "a.example" }), /mcp_host/);
     assert.throws(() => validateSite({ public_host: "a.example", title: " " }), /title/);
     assert.throws(() => validateSite({ public_host: "a.example", locale: "not a locale" }), /locale/);
+    for (const content_signal of ["", "search", "search=maybe", "search=yes,ai-train=no", 1, "search=yes\nDisallow: /", "search=yes\n"]) {
+      assert.throws(() => validateSite({ public_host: "a.example", content_signal }), /content_signal/);
+    }
   });
 
   it("accepts punycode top-level domains", () => {
@@ -50,7 +54,7 @@ describe("site configuration", () => {
 
   it("builds a deploy config from the tracked config without inheriting its identity", () => {
     const base = JSON.parse(readFileSync(join(repo, "wrangler.jsonc"), "utf8"));
-    const site = validateSite({ public_host: "blog.example.com", title: "Blog", description: "About", locale: "fr" });
+    const site = validateSite({ public_host: "blog.example.com", title: "Blog", description: "About", locale: "fr", content_signal: "search=yes, ai-train=yes" });
     const config = buildDeployConfig(base, site, { database_id: "db", access_aud: "aud", access_team_domain: "https://t.cloudflareaccess.com" });
     assert.equal(config.name, "blog-example-com");
     assert.equal(config.main, "../src/index.ts");
@@ -61,7 +65,7 @@ describe("site configuration", () => {
     assert.deepEqual(config.vars, {
       PUBLIC_HOST: "blog.example.com", MCP_HOST: "mcp.blog.example.com",
       ACCESS_TEAM_DOMAIN: "https://t.cloudflareaccess.com", ACCESS_AUD: "aud",
-      SITE_TITLE: "Blog", SITE_DESCRIPTION: "About", SITE_LOCALE: "fr",
+      SITE_TITLE: "Blog", SITE_DESCRIPTION: "About", SITE_LOCALE: "fr", SITE_CONTENT_SIGNAL: "search=yes, ai-train=yes",
     });
     assert.deepEqual(config.d1_databases, [{ binding: "DB", database_name: "blog-example-com", database_id: "db", migrations_dir: "../migrations" }]);
   });

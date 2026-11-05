@@ -2,7 +2,7 @@ import { escapeHtml, type Site } from "./html";
 import type { PublishedPost } from "./types";
 
 // XML 1.0 forbids these characters even when escaped, and one would break the whole feed.
-function xml(value: string): string {
+export function xml(value: string): string {
   return escapeHtml(value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, ""));
 }
 

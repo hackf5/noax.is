@@ -19,7 +19,8 @@
     "ACCESS_AUD": "",
     "SITE_TITLE": "noax",
     "SITE_DESCRIPTION": "A minimal microblog.",
-    "SITE_LOCALE": "en"
+    "SITE_LOCALE": "en",
+    "SITE_CONTENT_SIGNAL": "search=yes, ai-input=yes"
   },
   "d1_databases": [
     {

@@ -4,7 +4,7 @@ import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@mod
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { Posts } from "../src/posts";
+import { Posts, SITEMAP_SIZE } from "../src/posts";
 import { RENDER_VERSION, renderMarkdown } from "../src/render";
 import type { Env, Post, Rendered } from "../src/types";
 
@@ -517,6 +517,302 @@ describe("Atom feed", () => {
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
     expect((await request(`${publicOrigin}/feed.xml`, { method: "POST" })).status).toBe(405);
+  });
+});
+
+describe("Markdown pages", () => {
+  const browser = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+  const claudeCode = "text/markdown, text/html, */*";
+  const openCode = "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
+  const markdown = { headers: { Accept: "text/markdown" } };
+
+  it.each([
+    [browser, "text/html"],
+    ["*/*", "text/html"],
+    ["", "text/html"],
+    [claudeCode, "text/markdown"],
+    [openCode, "text/markdown"],
+    ["application/json, text/plain, */*", "text/html"],
+    ["text/plain", "text/plain"],
+    ["text/plain, */*;q=0.5", "text/plain"],
+    ["text/html;q=0.9, text/plain", "text/plain"],
+    ["text/html, text/plain", "text/html"],
+    ["text/html, text/markdown", "text/markdown"],
+    ["text/html, text/markdown;q=0.9", "text/html"],
+    ["text/markdown;q=0.5, */*;q=0.8", "text/html"],
+    ["text/markdown;q=0.5, text/*;q=0.8", "text/html"],
+    ["text/markdown;q=0, */*", "text/html"],
+    ["TEXT/MarkDown ; Q=0.5", "text/markdown"],
+    ["text/markdown;charset=utf-8;q=1", "text/markdown"],
+    ["text/markdown;q=oops", "text/html"],
+    ["text/markdown, text/html;q=oops", "text/html"],
+  ])("answers Accept: %s with %s", async (accept, type) => {
+    const post = await new Posts(env.DB).create("Hello");
+    for (const path of ["/", `/posts/${post.id}`]) {
+      const response = await request(`${publicOrigin}${path}`, { headers: accept ? { Accept: accept } : {} });
+      expect(response.headers.get("Content-Type")).toBe(`${type}; charset=utf-8`);
+      expect(response.headers.get("Vary")).toBe("Accept");
+    }
+  });
+
+  it("serves a post exactly as written beneath escaped front matter", async () => {
+    const source = '# A "quoted" title\n\nThe **first** paragraph.\n\n[ref]: https://example.com';
+    const post = await new Posts(env.DB).create(source);
+    const url = `${publicOrigin}/posts/${post.id}`;
+    const response = await request(url, markdown);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Link")).toBe(`<${url}>; rel="canonical"`);
+    expect(await response.text()).toBe([
+      "---", 'title: "A \\"quoted\\" title"', 'description: "The first paragraph."', `url: "${url}"`,
+      `published: "${post.created_at}"`, `updated: "${post.updated_at}"`, "---", "", source, "",
+    ].join("\n"));
+  });
+
+  it("serves the same post at its .md URL, whatever Accept says", async () => {
+    const post = await new Posts(env.DB).create("# Title\n\nBody");
+    const expected = await (await request(`${publicOrigin}/posts/${post.id}`, markdown)).text();
+    for (const headers of [{ Accept: browser }, {}] as HeadersInit[]) {
+      const response = await request(`${publicOrigin}/posts/${post.id}.md`, { headers });
+      expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+      expect(await response.text()).toBe(expected);
+    }
+  });
+
+  it("never serves a post's source as HTML", async () => {
+    const post = await new Posts(env.DB).create("<script>alert(1)</script>");
+    for (const init of [markdown, { headers: { Accept: "text/plain" } }]) {
+      for (const path of ["/", `/posts/${post.id}`]) {
+        const response = await request(`${publicOrigin}${path}`, init);
+        expect(response.headers.get("Content-Type")).not.toContain("html");
+        expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+        expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+        expect(await response.text()).toContain("<script>alert(1)</script>");
+      }
+    }
+  });
+
+  it("points HTML pages at their Markdown versions", async () => {
+    const post = await new Posts(env.DB).create("Hello");
+    const home = await request(`${publicOrigin}/`);
+    expect(home.headers.get("Link")).toBe('</index.md>; rel="alternate"; type="text/markdown"');
+    expect(await home.text()).toContain('<link rel="alternate" type="text/markdown" href="/index.md">');
+    const page = await request(`${publicOrigin}/posts/${post.id}`);
+    expect(page.headers.get("Link")).toBe(`</posts/${post.id}.md>; rel="alternate"; type="text/markdown"`);
+    expect(await page.text()).toContain(`<link rel="alternate" type="text/markdown" href="/posts/${post.id}.md">`);
+  });
+
+  it("matches the timeline, with a permalink for each post and a guide for agents", async () => {
+    const posts = new Posts(env.DB);
+    const older = await posts.create("# Older\n\nOlder body.");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = await posts.create("Newer body.");
+    const response = await request(`${publicOrigin}/`, markdown);
+    expect(response.headers.get("Link")).toBe(`<${publicOrigin}/>; rel="canonical"`);
+    expect(await response.text()).toBe([
+      "# Test Blog", "", "Notes for the test suite.", "", `Guide for agents: [llms.txt](${publicOrigin}/llms.txt)`, "", "---", "",
+      `[${newer.created_at}](${publicOrigin}/posts/${newer.id})`, "", "Newer body.", "", "---", "",
+      `[${older.created_at}](${publicOrigin}/posts/${older.id})`, "", "# Older", "", "Older body.", "",
+    ].join("\n"));
+    expect(await (await request(`${publicOrigin}/index.md`)).text()).toContain("Newer body.");
+  });
+
+  it("says so when there are no posts", async () => {
+    const text = await (await request(`${publicOrigin}/index.md`)).text();
+    expect(text).toContain("# Test Blog");
+    expect(text).toContain("No posts yet.");
+  });
+
+  it("paginates like the HTML timeline", async () => {
+    const ids = Array.from({ length: 21 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+    await env.DB.batch(ids.map((id, index) => env.DB.prepare(
+      "INSERT INTO posts (id, markdown, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).bind(id, `Post ${index}.`, "2026-11-04T12:00:00.000Z", "2026-11-04T12:00:00.000Z")));
+    const first = await (await request(`${publicOrigin}/`, markdown)).text();
+    const older = /\[Older posts\]\((.*)\)/.exec(first)![1]!;
+    expect(older).toContain("/index.md?before=");
+    expect(first).not.toContain("Post 0.");
+    const response = await request(older);
+    const before = new URL(older).search;
+    expect(response.headers.get("Link")).toBe(`<${publicOrigin}/${before}>; rel="canonical"`);
+    const second = await response.text();
+    expect(second).toContain("Post 0.");
+    expect(second).not.toContain("Older posts");
+    expect((await request(`${publicOrigin}/${before}`)).headers.get("Link")).toBe(`</index.md${before}>; rel="alternate"; type="text/markdown"`);
+  });
+
+  it("reports errors in Markdown with the right status", async () => {
+    const cases: [string, number, string][] = [
+      ["/posts/00000000-0000-4000-8000-000000000001", 404, "# Not found"],
+      ["/posts/00000000-0000-4000-8000-000000000001.md", 404, "# Not found"],
+      ["/unknown", 404, "# Not found"],
+      ["/?before=malformed", 400, "# Invalid pagination cursor"],
+      ["/index.md?before=malformed", 400, "# Invalid pagination cursor"],
+    ];
+    for (const [path, status, heading] of cases) {
+      const response = await request(`${publicOrigin}${path}`, markdown);
+      expect(response.status).toBe(status);
+      expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+      expect(response.headers.get("Vary")).toBe("Accept");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.text()).toContain(heading);
+    }
+    const html = await request(`${publicOrigin}/unknown`);
+    expect(html.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    expect(html.headers.get("Vary")).toBe("Accept");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = { ...env, DB: { prepare() { throw new Error("D1 unavailable"); } } } as unknown as Env;
+    const failed = await worker.fetch(new Request(`${publicOrigin}/`, markdown), broken, createExecutionContext());
+    expect(failed.status).toBe(500);
+    expect(failed.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+    logged.mockRestore();
+  });
+
+  it("supports HEAD, and leaves other paths alone", async () => {
+    const post = await new Posts(env.DB).create("Hello");
+    const head = await request(`${publicOrigin}/posts/${post.id}.md`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+    expect(await head.text()).toBe("");
+    expect((await request(`${publicOrigin}/posts/${post.id}.md`, { method: "POST" })).status).toBe(405);
+    expect((await request(`${publicOrigin}/feed.xml`, markdown)).headers.get("Content-Type")).toBe("application/atom+xml; charset=utf-8");
+    expect((await request(`${publicOrigin}/style.css`, markdown)).headers.get("Content-Type")).toContain("text/css");
+    expect((await request(`${publicOrigin}/feed.xml.md`)).status).toBe(404);
+  });
+});
+
+describe("agent discovery", () => {
+  const timestamp = "2026-11-04T12:00:00.000Z";
+
+  async function insertAt(rowid: number, updatedAt = timestamp): Promise<string> {
+    const id = `00000000-0000-4000-8000-${String(rowid).padStart(12, "0")}`;
+    await env.DB.prepare("INSERT INTO posts (rowid, id, markdown, created_at, updated_at) VALUES (?, ?, 'Post', ?, ?)").bind(rowid, id, timestamp, updatedAt).run();
+    return id;
+  }
+
+  async function renderedRows(): Promise<number> {
+    return (await env.DB.prepare("SELECT COUNT(*) AS rows FROM posts WHERE render_version IS NOT NULL").first<{ rows: number }>())!.rows;
+  }
+
+  const locations = (xml: string) => [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]!);
+
+  it("publishes robots.txt with the configured signal and an absolute sitemap", async () => {
+    const response = await request(`${publicOrigin}/robots.txt`);
+    expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=86400");
+    expect(await response.text()).toBe(`User-agent: *\nContent-Signal: search=yes, ai-input=yes, ai-train=no\nAllow: /\n\nSitemap: ${publicOrigin}/sitemap.xml\n`);
+  });
+
+  it("guides agents from llms.txt to the newest posts", async () => {
+    const post = await new Posts(env.DB).create("# First post\n\nA summary.");
+    const response = await request(`${publicOrigin}/llms.txt`);
+    expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=300");
+    const text = await response.text();
+    expect(text.startsWith("# Test Blog\n\n> Notes for the test suite.\n\n")).toBe(true);
+    expect(text).toContain("`Accept: text/markdown`");
+    expect(text).toContain(`## Recent posts\n\n- [First post](${publicOrigin}/posts/${post.id}.md): A summary.\n`);
+    expect(text).toContain(`## Optional\n\n- [Atom feed](${publicOrigin}/feed.xml)`);
+    expect(text).toContain(`- [Sitemap](${publicOrigin}/sitemap.xml)`);
+  });
+
+  it("leaves out the posts section when there are none", async () => {
+    const text = await (await request(`${publicOrigin}/llms.txt`)).text();
+    expect(text).not.toContain("## Recent posts");
+    expect(text).toContain("## Optional");
+  });
+
+  it("keeps links in post text inert in llms.txt", async () => {
+    await new Posts(env.DB).create("# [x](javascript:alert(1)) <b>\n\n[y](javascript:alert(2)) back\\slash");
+    const text = await (await request(`${publicOrigin}/llms.txt`)).text();
+    expect(text).toContain("- [\\[x\\](javascript:alert(1)) \\<b>](");
+    expect(text).toContain(": \\[y\\](javascript:alert(2)) back\\\\slash\n");
+  });
+
+  it("lists only the pages sitemap on an empty site", async () => {
+    const index = await request(`${publicOrigin}/sitemap.xml`);
+    expect(index.headers.get("Content-Type")).toBe("application/xml; charset=utf-8");
+    expect(index.headers.get("Cache-Control")).toBe("public, max-age=300");
+    const xml = await index.text();
+    expect(xml).toContain('<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
+    expect(locations(xml)).toEqual([`${publicOrigin}/sitemap-pages.xml`]);
+    const pages = await (await request(`${publicOrigin}/sitemap-pages.xml`)).text();
+    expect(pages).toContain('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">');
+    expect(locations(pages)).toEqual([`${publicOrigin}/`]);
+  });
+
+  it("splits posts into fixed buckets of rowids, with their newest edit as lastmod", async () => {
+    const newest = "2026-11-05T09:00:00.000Z";
+    const [first, last, second, third] = [await insertAt(1), await insertAt(999, newest), await insertAt(1000), await insertAt(2500)];
+    const index = await (await request(`${publicOrigin}/sitemap.xml`)).text();
+    expect(locations(index)).toEqual([`${publicOrigin}/sitemap-pages.xml`, ...[0, 1, 2].map((bucket) => `${publicOrigin}/sitemap-posts-${bucket}.xml`)]);
+    expect(index).toContain(`<loc>${publicOrigin}/sitemap-posts-0.xml</loc><lastmod>${newest}</lastmod>`);
+    const posts = async (bucket: number) => request(`${publicOrigin}/sitemap-posts-${bucket}.xml`);
+    const bucket0 = await (await posts(0)).text();
+    expect(locations(bucket0)).toEqual([first, last].map((id) => `${publicOrigin}/posts/${id}`));
+    expect(bucket0).toContain(`<loc>${publicOrigin}/posts/${last}</loc><lastmod>${newest}</lastmod>`);
+    expect(locations(await (await posts(1)).text())).toEqual([`${publicOrigin}/posts/${second}`]);
+    expect(locations(await (await posts(2)).text())).toEqual([`${publicOrigin}/posts/${third}`]);
+    expect((await posts(1)).headers.get("Cache-Control")).toBe("public, max-age=300");
+  });
+
+  it("never holds more than SITEMAP_SIZE posts in one file", async () => {
+    await env.DB.batch(Array.from({ length: SITEMAP_SIZE + 5 }, (_, index) => env.DB.prepare(
+      "INSERT INTO posts (id, markdown, created_at, updated_at) VALUES (?, 'Post', ?, ?)",
+    ).bind(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, timestamp, timestamp)));
+    const counts = await Promise.all([0, 1].map(async (bucket) =>
+      locations(await (await request(`${publicOrigin}/sitemap-posts-${bucket}.xml`)).text()).length));
+    expect(counts).toEqual([SITEMAP_SIZE - 1, 6]);
+  });
+
+  it("drops an emptied bucket without moving the others", async () => {
+    await insertAt(1);
+    const moved = await insertAt(1500);
+    const gone = await insertAt(2500);
+    const before = await (await request(`${publicOrigin}/sitemap-posts-1.xml`)).text();
+    await new Posts(env.DB).delete(gone, 1);
+    expect(await (await request(`${publicOrigin}/sitemap-posts-1.xml`)).text()).toBe(before);
+    expect(before).toContain(moved);
+    expect(locations(await (await request(`${publicOrigin}/sitemap.xml`)).text())).not.toContain(`${publicOrigin}/sitemap-posts-2.xml`);
+    expect((await request(`${publicOrigin}/sitemap-posts-2.xml`)).status).toBe(404);
+  });
+
+  it("rejects buckets that aren't there or aren't spelled canonically", async () => {
+    await insertAt(1);
+    for (const path of ["/sitemap-posts-5.xml", "/sitemap-posts-01.xml", "/sitemap-posts--1.xml", "/sitemap-posts-1e3.xml", "/sitemap-posts-9999999999.xml", "/sitemaps/0.xml"]) {
+      expect((await request(`${publicOrigin}${path}`)).status).toBe(404);
+    }
+  });
+
+  it("lists canonical URLs only", async () => {
+    await insertAt(1);
+    const xml = await (await request(`${publicOrigin}/sitemap-posts-0.xml`)).text();
+    expect(xml).not.toContain(".md");
+    expect(xml).not.toContain("?before");
+  });
+
+  it.each(["/sitemap.xml", "/sitemap-posts-0.xml"])("doesn't render anything for %s", async (path) => {
+    await insertAt(1);
+    expect((await request(`${publicOrigin}${path}`)).status).toBe(200);
+    expect(await renderedRows()).toBe(0);
+  });
+
+  it("doesn't render anything for the Markdown timeline", async () => {
+    await insertAt(1);
+    const response = await request(`${publicOrigin}/index.md`);
+    expect(await response.text()).toContain("Post");
+    expect(await renderedRows()).toBe(0);
+  });
+
+  it("supports HEAD and keeps every discovery path off the MCP host", async () => {
+    for (const path of ["/robots.txt", "/llms.txt", "/sitemap.xml", "/sitemap-pages.xml"]) {
+      const head = await request(`${publicOrigin}${path}`, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(await head.text()).toBe("");
+      expect((await request(`${publicOrigin}${path}`, { method: "POST" })).status).toBe(405);
+      expect((await request(`${mcpOrigin}${path}`)).status).toBe(404);
+    }
+    expect((await request(`${mcpOrigin}/index.md`)).status).toBe(404);
   });
 });
 

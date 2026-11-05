@@ -3,5 +3,6 @@
   "mcp_host": "mcp.blog.example.com",
   "title": "My blog",
   "description": "Notes from my blog.",
-  "locale": "en"
+  "locale": "en",
+  "content_signal": "search=yes, ai-input=yes"
 }
