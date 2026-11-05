@@ -63,7 +63,7 @@ export async function discoverTeamDomain(api, accountPath) {
   } catch (error) {
     throw new Error(
       "Could not read your Zero Trust organisation. Create one at https://one.dash.cloudflare.com, " +
-      "check the token has Access: Organizations Read, or set ACCESS_TEAM_DOMAIN in .local/cloudflare.env. " +
+      "check the token has Access: Organizations, Identity Providers, and Groups Read, or set ACCESS_TEAM_DOMAIN in .local/cloudflare.env. " +
       `(${error.message})`,
     );
   }

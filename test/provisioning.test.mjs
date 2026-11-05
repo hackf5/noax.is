@@ -168,7 +168,7 @@ describe("Cloudflare helpers", () => {
 
   it("explains how to fix a missing organisation or permission", async () => {
     await assert.rejects(discoverTeamDomain(async () => ({}), "/accounts/x"), /no Zero Trust organisation/);
-    await assert.rejects(discoverTeamDomain(async () => { throw new Error("HTTP 403"); }, "/accounts/x"), /Access: Organizations Read.*HTTP 403/s);
+    await assert.rejects(discoverTeamDomain(async () => { throw new Error("HTTP 403"); }, "/accounts/x"), /Access: Organizations, Identity Providers, and Groups Read.*HTTP 403/s);
   });
 
   it("only accepts Cloudflare Access origins", () => {

@@ -39,7 +39,7 @@ Create a token in the Cloudflare dashboard with:
 | Account | D1: Edit | Creating the database, running migrations |
 | Account | Access: Apps and Policies: Edit | Protecting the MCP hostname |
 | Account | Access: Service Tokens: Edit | Creating your publishing credential |
-| Account | Access: Organizations: Read | Finding your Access team |
+| Account | Access: Organizations, Identity Providers, and Groups: Read | Finding your Access team |
 | Zone | Zone: Read | Finding your zone |
 | Zone | Workers Routes: Edit | Attaching your hostnames |
 
