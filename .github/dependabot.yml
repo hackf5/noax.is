@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Types should match the Node version the project targets.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       dependencies:
         patterns: ["*"]

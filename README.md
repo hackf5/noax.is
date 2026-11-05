@@ -4,7 +4,7 @@ Noax.is is a minimal, extensible microblog that you can host for free (excluding
 
 Since you do almost everything else through your coding agent, why are you messing around with an admin dashboard and typing into a prosemirror wrapper? Exactly, you're not. The browser and the mouse are so yesterday.
 
-You tell the coding agent to make a post, it makes that post. You tell the agent you want a new feature (a search box, an image gallery) it makes it. No frameworks, no plugins. Two cloudflare workers, D1 for persistence (maybe you'll need R2 for general storage) all on the free plan and that's it. The world is yours.
+You tell the coding agent to make a post, it makes that post. You tell the agent you want a new feature (a search box, an image gallery) it makes it. No frameworks, no plugins. One Cloudflare Worker, D1 for persistence (maybe you'll need R2 for general storage) all on the free plan and that's it. The world is yours.
 
 See it running at [noax.is](https://noax.is).
 
