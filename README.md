@@ -1,8 +1,16 @@
-# noax
+# noax.is
 
-A minimal, single-author microblog that you publish to from your coding agent. There's one Cloudflare Worker, one D1 database and five MCP tools. There's no dashboard: you draft in a conversation with Claude Code or Codex, say "post it", and it's live.
+Noax.is is a minimal, extensible microblog that you can host for free (excluding domain costs).
+
+Since you do almost everything else through your coding agent, why are you messing around with an admin dashboard and typing into a prosemirror wrapper? Exactly, you're not. The browser and the mouse are so yesterday.
+
+You tell the coding agent to make a post, it makes that post. You tell the agent you want a new feature (a search box, an image gallery) it makes it. No frameworks, no plugins. Two cloudflare workers, D1 for persistence (maybe you'll need R2 for general storage) all on the free plan and that's it. The world is yours.
 
 See it running at [noax.is](https://noax.is).
+
+The text below is for your agent, not you. TL;DR; fellow thetan. Leave the "details" to the big guy/gal. Your squishy organic brain is too valuable to be worrying about bash scripts and CSS grids (snooze). If you can dream it you (the agent) can make it.
+
+Stop reading now and point the agent at this page. It will take it from here.
 
 ## How it works
 
