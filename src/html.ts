@@ -1,4 +1,5 @@
 import type { Env, PostPage, PublishedPost } from "./types";
+import { postPath } from "./post-metadata";
 
 export interface Site {
   title: string;
@@ -81,14 +82,22 @@ function dateFormat(site: Site): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat(site.locale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
 }
 
-function renderPost(post: PublishedPost, dates: Intl.DateTimeFormat): string {
+// The renderer marks the title once, so cached reads never parse Markdown again.
+export function postBody(post: PublishedPost, linkTitle = false): string {
+  return post.html.replace(/<!--post-title--><h2>([\s\S]*?)<\/h2>/, (_match, title: string) =>
+    linkTitle
+      ? `<h2><a href="${escapeHtml(postPath(post))}">${title.replace(/<\/?a\b[^>]*>/g, "")}</a></h2>`
+      : `<h2>${title}</h2>`);
+}
+
+function renderPost(post: PublishedPost, dates: Intl.DateTimeFormat, linkTitle = false): string {
   const date = dates.format(new Date(post.created_at));
-  return `<article><a href="/posts/${post.id}"><time datetime="${escapeHtml(post.created_at)}">${escapeHtml(date)} UTC</time></a><div class="body">${post.html}</div></article>`;
+  return `<article><a href="${escapeHtml(postPath(post))}"><time datetime="${escapeHtml(post.created_at)}">${escapeHtml(date)} UTC</time></a><div class="body">${postBody(post, linkTitle)}</div></article>`;
 }
 
 export function timeline(site: Site, page: PostPage<PublishedPost>, firstPage: boolean, markdown: string): string {
   const dates = dateFormat(site);
-  const posts = page.posts.map((post) => renderPost(post, dates)).join("") || '<p class="quiet">No posts yet.</p>';
+  const posts = page.posts.map((post) => renderPost(post, dates, true)).join("") || '<p class="quiet">No posts yet.</p>';
   const navigation = page.next_cursor
     ? `<nav aria-label="Pagination"><a href="/?before=${encodeURIComponent(page.next_cursor)}">Older posts</a></nav>`
     : "";
@@ -99,9 +108,9 @@ export function postPage(site: Site, post: PublishedPost): string {
   return layout(site, `${renderPost(post, dateFormat(site))}<nav><a href="/">All posts</a></nav>`, {
     title: post.title,
     description: post.summary,
-    canonical: `${site.origin}/posts/${post.id}`,
+    canonical: `${site.origin}${postPath(post)}`,
     published: post.created_at,
-    markdown: `/posts/${post.id}.md`,
+    markdown: `${postPath(post)}.md`,
   });
 }
 

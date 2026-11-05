@@ -87,7 +87,9 @@ To give your agent a house style, copy `EDITORIAL.example.md` to `EDITORIAL.md` 
 | `update_post` | `id`, `markdown`, `expected_version` | Replace the live Markdown. |
 | `delete_post` | `id`, `expected_version` | Delete permanently. |
 
-Posts must contain text and fit within 64,000 characters. Markdown supports paragraphs, headings, emphasis, lists, quotes, links and code. Raw HTML and images are disabled. A post's page title and description come from its first heading or line and the text that follows.
+Posts must contain text and fit within 64,000 characters. Markdown supports paragraphs, headings, emphasis, lists, quotes, links and code. Raw HTML and images are disabled. A post's page title comes from its first top-level H1 (`# Title`), and its description comes from the body text.
+
+The title also supplies the initial public URL, `/posts/{slug}`, and the homepage heading links to it. Slugs use lowercase ASCII words separated by hyphens, normalise accents, and receive numeric suffixes for duplicates. A post without an H1 uses the title `Post` and base slug `post`. Editing a heading changes the page title while preserving the published URL. MCP results include `slug` and the canonical `url`; `id` remains the UUID used for reading, editing and deleting through MCP. Older UUID URLs redirect permanently to the slug URL.
 
 ## Read it as an agent
 
@@ -95,8 +97,8 @@ Every page has a Markdown version. A post is its source exactly as written, bene
 
 | URL | What it gives |
 | --- | --- |
-| `/`, `/posts/<id>` with `Accept: text/markdown` | The page as Markdown. `Accept: text/plain` gets the same text as `text/plain`. |
-| `/index.md`, `/posts/<id>.md` | The same, for clients that can't set headers. |
+| `/`, `/posts/<slug>` with `Accept: text/markdown` | The page as Markdown. `Accept: text/plain` gets the same text as `text/plain`. |
+| `/index.md`, `/posts/<slug>.md` | The same, for clients that can't set headers. |
 | `/llms.txt` | A guide for agents, with the newest posts. |
 | `/robots.txt` | Crawl rules, your `content_signal` and the sitemap's location. |
 | `/sitemap.xml` | An index of sitemaps, each listing up to 1,000 posts. |
@@ -152,10 +154,14 @@ These limits come from Cloudflare's [Workers](https://developers.cloudflare.com/
 git pull
 npm ci
 npm run db:migrate:remote
+npm run db:backfill-slugs:remote
 npm run deploy
+npm run db:backfill-slugs:remote
 ```
 
 Run the migration first. This needs an API token in `.local/cloudflare.env`.
+
+The slug migration allows null values so the previous Worker can keep publishing during deployment. The idempotent backfill assigns slugs in publication order without changing Markdown, timestamps or versions. Run it before deployment and again afterwards to cover posts created by the previous Worker during rollout; it checks that no posts without slugs remain. Until backfilled, legacy posts keep their UUID URLs. The remote backfill uses the provisioning credentials, separately from the MCP Access service token.
 
 ### Back up
 
@@ -193,6 +199,7 @@ The Access service token lasts a year, and publishing stops when it expires. `np
 ```sh
 npm ci
 npm run db:migrate:local
+npm run db:backfill-slugs:local
 npm run dev
 ```
 

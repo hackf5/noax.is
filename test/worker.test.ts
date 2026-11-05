@@ -5,6 +5,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { Posts, SITEMAP_SIZE } from "../src/posts";
+import { backfillSlugs, type SlugQuery } from "../src/slug-backfill";
 import { RENDER_VERSION, renderMarkdown } from "../src/render";
 import type { Env, Post, Rendered } from "../src/types";
 
@@ -33,6 +34,9 @@ async function request(url: string | URL, init?: RequestInit): Promise<Response>
   contexts.push(ctx);
   return worker.fetch(new Request(url, init), env, ctx);
 }
+
+const slugQuery: SlugQuery = async <Row>(sql: string, params: (string | number)[]) =>
+  (await env.DB.prepare(sql).bind(...params).all<Row>()).results;
 
 async function withClient<T>(callback: (client: Client) => Promise<T>): Promise<T> {
   const client = new Client({ name: "noax-test", version: "1.0.0" });
@@ -94,23 +98,29 @@ describe("MCP publishing", () => {
 
   it("publishes, reads, edits, rejects stale changes and deletes a post", async () => {
     await withClient(async (client) => {
-      const created = postFrom(await call(client, "create_post", { markdown: "Hello **world**. It's a post." }));
+      const created = postFrom(await call(client, "create_post", { markdown: "# The Future Was Free\n\nHello **world**. It's a post." }));
       expect(created.version).toBe(1);
-      expect(created.url).toBe(`${publicOrigin}/posts/${created.id}`);
+      expect(created.slug).toBe("the-future-was-free");
+      expect(created.url).toBe(`${publicOrigin}/posts/the-future-was-free`);
       expect(await (await request(created.url)).text()).toContain("<strong>world</strong>");
       expect(postFrom(await call(client, "get_post", { id: created.id }))).toEqual(created);
-      const updated = postFrom(await call(client, "update_post", { id: created.id, markdown: "Edited", expected_version: 1 }));
+      const updated = postFrom(await call(client, "update_post", { id: created.id, markdown: "# A New Title\n\nEdited", expected_version: 1 }));
       expect(updated.version).toBe(2);
       expect(updated.created_at).toBe(created.created_at);
       expect(updated.id).toBe(created.id);
-      expect(await (await request(created.url)).text()).toContain("Edited");
+      expect(updated.slug).toBe(created.slug);
+      expect(updated.url).toBe(created.url);
+      const updatedHtml = await (await request(created.url)).text();
+      expect(updatedHtml).toContain("Edited");
+      expect(updatedHtml).toContain(`<title>A New Title · ${env.SITE_TITLE}</title>`);
       const staleEdit = await call(client, "update_post", { id: created.id, markdown: "Stale", expected_version: 1 });
       expect(staleEdit.isError).toBe(true);
       expect(staleEdit.structuredContent!.error).toMatchObject({ code: "conflict" });
       const staleDelete = await call(client, "delete_post", { id: created.id, expected_version: 1 });
       expect(staleDelete.isError).toBe(true);
       expect(staleDelete.structuredContent!.error).toMatchObject({ code: "conflict" });
-      expect(postFrom(await call(client, "get_post", { id: created.id })).markdown).toBe("Edited");
+      expect(postFrom(await call(client, "get_post", { id: created.id }))).toEqual(updated);
+      expect((await call(client, "list_posts", {})).structuredContent).toMatchObject({ posts: [updated] });
       expect((await call(client, "delete_post", { id: created.id, expected_version: 2 })).structuredContent).toEqual({ deleted: true, id: created.id });
       expect((await request(created.url)).status).toBe(404);
       const missing = await call(client, "get_post", { id: created.id });
@@ -183,12 +193,138 @@ describe("public reading", () => {
   it("renders basic Markdown while escaping HTML and blocking unsafe links and images", async () => {
     const posts = new Posts(env.DB);
     const post = await posts.create("# Heading\n\n**bold** and *emphasis* with [link](https://example.com).\n\n- item\n\n> quote\n\n`inline`\n\n```js\nconst x = '<tag>';\n```\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert%281%29)\n\n![photo](https://example.com/photo.png)");
-    const html = await (await request(`${publicOrigin}/posts/${post.id}`)).text();
+    const html = await (await request(`${publicOrigin}/posts/${post.slug}`)).text();
     for (const fragment of ["<h2>Heading</h2>", "<strong>bold</strong>", "<em>emphasis</em>", '<a href="https://example.com">', "<ul>", "<blockquote>", "<code>inline</code>", '<pre tabindex="0">', "&lt;script&gt;"]) expect(html).toContain(fragment);
     expect(html).not.toContain("<script>");
     expect(html).not.toContain('href="javascript:');
     expect(html).not.toContain("<img");
     expect(html.match(/<h1>/g)).toHaveLength(1);
+  });
+
+  it("serves a titled slug permalink, links its homepage heading and redirects the UUID", async () => {
+    const post = await new Posts(env.DB).create("# The Future Was Free\n\nThe article.");
+    const response = await request(`${publicOrigin}/posts/the-future-was-free`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(`<title>The Future Was Free · ${env.SITE_TITLE}</title>`);
+    expect(html).toContain("<h2>The Future Was Free</h2>");
+    const homepage = await (await request(`${publicOrigin}/`)).text();
+    expect(homepage).toContain('<h2><a href="/posts/the-future-was-free">The Future Was Free</a></h2>');
+    expect(homepage.match(/href="\/posts\/the-future-was-free"/g)).toHaveLength(2);
+    expect(homepage).not.toContain(`/posts/${post.id}`);
+    expect(homepage).toContain(`<title>${env.SITE_TITLE}</title>`);
+    for (const method of ["GET", "HEAD"]) {
+      const redirect = await request(`${publicOrigin}/posts/${post.id}`, { method });
+      expect(redirect.status).toBe(301);
+      expect(redirect.headers.get("Location")).toBe("/posts/the-future-was-free");
+      expect(redirect.headers.get("Cache-Control")).toBe("no-store");
+      expect(await redirect.text()).toBe("");
+    }
+    const head = await request(`${publicOrigin}/posts/the-future-was-free`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("Content-Type")).toBe(response.headers.get("Content-Type"));
+    expect(await head.text()).toBe("");
+  });
+
+  it("extracts the first top-level H1 and preserves inline formatting without nesting links", async () => {
+    const post = await new Posts(env.DB).create(
+      '> # Quoted heading\n\n```md\n# Code heading\n```\n\n# Café *Rock* &amp; `roll` [isn\'t](https://example.com)\n\n# Another heading\n\n[Body link](https://example.org)',
+    );
+    expect(post.slug).toBe("cafe-rock-roll-isnt");
+    const homepage = await (await request(`${publicOrigin}/`)).text();
+    const title = '<h2><a href="/posts/cafe-rock-roll-isnt">Café <em>Rock</em> &amp; <code>roll</code> isn\'t</a></h2>';
+    expect(homepage).toContain(title);
+    expect(homepage).toContain("<h2>Another heading</h2>");
+    expect(homepage).not.toContain('href="https://example.com"');
+    expect(homepage).toContain('href="https://example.org"');
+    const html = await (await request(`${publicOrigin}/posts/${post.slug}`)).text();
+    expect(html).toContain(`<title>Café Rock &amp; roll isn&#39;t · ${env.SITE_TITLE}</title>`);
+    expect(html).toContain('<a href="https://example.com">');
+  });
+
+  it("uses stable slug URLs in Markdown, feeds and discovery after a title edit", async () => {
+    const posts = new Posts(env.DB);
+    const post = await posts.create("# Original title\n\nThe article.");
+    await posts.update(post.id, "# Revised title\n\nThe article.", post.version);
+    const canonical = `${publicOrigin}/posts/original-title`;
+    const source = await request(`${canonical}.md`);
+    expect(source.status).toBe(200);
+    expect(source.headers.get("Link")).toBe(`<${canonical}>; rel="canonical"`);
+    expect(await source.text()).toContain(`url: "${canonical}"`);
+    for (const method of ["GET", "HEAD"]) {
+      const redirect = await request(`${publicOrigin}/posts/${post.id}.md`, { method });
+      expect(redirect.status).toBe(301);
+      expect(redirect.headers.get("Location")).toBe("/posts/original-title.md");
+      expect(await redirect.text()).toBe("");
+    }
+    const [bucket] = await posts.sitemapBuckets();
+    for (const path of ["/index.md", "/llms.txt", "/feed.xml", `/sitemap-posts-${bucket!.bucket}.xml`]) {
+      const response = await request(`${publicOrigin}${path}`);
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain(canonical);
+      expect(body).not.toContain(`/posts/${post.id}`);
+      expect(body).not.toContain("<!--post-title-->");
+    }
+    const html = await (await request(canonical)).text();
+    expect(html).toContain(`<link rel="canonical" href="${canonical}">`);
+    expect(html).toContain(`<title>Revised title · ${env.SITE_TITLE}</title>`);
+  });
+
+  it("links a cached title without rendering its Markdown again", async () => {
+    const render = vi.fn(renderMarkdown);
+    const posts = new Posts(env.DB, render);
+    const post = await posts.create("# *Cached* title\n\nBody.");
+    render.mockClear();
+    await posts.getBySlug(post.slug!);
+    await posts.listPublished();
+    expect(render).not.toHaveBeenCalled();
+    const html = await (await request(`${publicOrigin}/`)).text();
+    expect(html).toContain('<h2><a href="/posts/cached-title"><em>Cached</em> title</a></h2>');
+    expect(html).not.toContain("<!--post-title-->");
+  });
+
+  it("escapes heading text in page metadata", async () => {
+    const post = await new Posts(env.DB).create('# <script> & "Quotes"');
+    const html = await (await request(`${publicOrigin}/posts/${post.slug}`)).text();
+    expect(html).toContain(`<title>&lt;script&gt; &amp; &quot;Quotes&quot; · ${env.SITE_TITLE}</title>`);
+    expect(html).not.toContain("<script>");
+  });
+
+  it("supports posts without a title and titles that contain no slug characters", async () => {
+    const posts = new Posts(env.DB);
+    const untitled = await posts.create("A short note without a heading.");
+    const symbols = await posts.create("# !!!");
+    const emptyHeading = await posts.create("#");
+    expect(untitled.slug).toBe("post");
+    expect(symbols.slug).toBe("post-2");
+    expect(emptyHeading.slug).toBe("post-3");
+    const html = await (await request(`${publicOrigin}/posts/post`)).text();
+    expect(html).toContain(`<title>Post · ${env.SITE_TITLE}</title>`);
+    expect(html).toContain("A short note without a heading.");
+    const homepage = await (await request(`${publicOrigin}/`)).text();
+    expect(homepage).not.toContain('<h2><a href="/posts/post-3">');
+  });
+
+  it("allocates unique slugs for duplicate, normalised and concurrent titles", async () => {
+    const posts = new Posts(env.DB);
+    expect((await posts.create("# Café!")).slug).toBe("cafe");
+    expect((await posts.create("# Cafe?")).slug).toBe("cafe-2");
+    const concurrent = await Promise.all(Array.from({ length: 4 }, () => posts.create("# Shared title")));
+    expect(concurrent.map((post) => post.slug).sort()).toEqual([
+      "shared-title", "shared-title-2", "shared-title-3", "shared-title-4",
+    ]);
+    for (const post of concurrent) {
+      expect((await request(`${publicOrigin}/posts/${post.slug}`)).status).toBe(200);
+    }
+  });
+
+  it("keeps UUID-shaped headings out of the legacy URL namespace", async () => {
+    const title = "00000000-0000-4000-8000-000000000001";
+    const post = await new Posts(env.DB).create(`# ${title}`);
+    expect(post.slug).toBe(`post-${title}`);
+    expect((await request(`${publicOrigin}/posts/${post.slug}`)).status).toBe(200);
+    expect((await request(`${publicOrigin}/posts/${post.id}`)).headers.get("Location")).toBe(`/posts/${post.slug}`);
   });
 
   it("paginates deterministically, including posts sharing the same timestamp", async () => {
@@ -287,7 +423,7 @@ describe("render cache", () => {
     expect(html).toContain("<strong>new output</strong>");
     expect(html).not.toContain("old output");
     expect(await row(id)).toMatchObject({
-      html: "<p><strong>new output</strong></p>\n", title: "new output", render_version: RENDER_VERSION, version: 1, updated_at: timestamp,
+      html: "<p><strong>new output</strong></p>\n", title: "Post", render_version: RENDER_VERSION, version: 1, updated_at: timestamp,
     });
   });
 
@@ -358,7 +494,7 @@ describe("render cache", () => {
       return save();
     }));
     await posts.getPublished(id);
-    expect(await row(id)).toMatchObject({ markdown: "Newer edit", html: "<p>Newer edit</p>\n", title: "Newer edit", version: 2 });
+    expect(await row(id)).toMatchObject({ markdown: "Newer edit", html: "<p>Newer edit</p>\n", title: "Post", version: 2 });
   });
 
   it("still serves the page if the cache can't be saved", async () => {
@@ -382,7 +518,7 @@ describe("render cache", () => {
   it("keeps rendered columns out of MCP responses", async () => {
     await withClient(async (client) => {
       const created = postFrom(await call(client, "create_post", { markdown: "Shape check" }));
-      const expected = ["created_at", "id", "markdown", "updated_at", "url", "version"];
+      const expected = ["created_at", "id", "markdown", "slug", "updated_at", "url", "version"];
       expect(Object.keys(created).sort()).toEqual(expected);
       expect(Object.keys(postFrom(await call(client, "get_post", { id: created.id }))).sort()).toEqual(expected);
       const { posts } = (await call(client, "list_posts", {})).structuredContent as { posts: Post[] };
@@ -418,6 +554,7 @@ describe("renderer output", () => {
       summary: "Heading two Heading six Text with bold, emphasis, code and a link. A hard break. A quote bullet number <b>raw</b> and !image and [unsafe](javascript:alert(1))",
     },
   };
+  expectedOutput[2] = { ...expectedOutput[1]!, html: `<!--post-title-->${expectedOutput[1]!.html}` };
 
   it("matches the recorded output for the current RENDER_VERSION", () => {
     expect(renderMarkdown(sample), "Rendered output changed: bump RENDER_VERSION in src/render.ts and add a new entry here.").toEqual(expectedOutput[RENDER_VERSION]);
@@ -427,7 +564,7 @@ describe("renderer output", () => {
 describe("post metadata", () => {
   async function pageFor(markdown: string): Promise<string> {
     const post = await new Posts(env.DB).create(markdown);
-    return (await request(`${publicOrigin}/posts/${post.id}`)).text();
+    return (await request(`${publicOrigin}/posts/${post.slug}`)).text();
   }
 
   it("titles a post from its heading and summarises the text after it", async () => {
@@ -441,12 +578,11 @@ describe("post metadata", () => {
     expect(html).toContain(`<link rel="canonical" href="${publicOrigin}/posts/`);
   });
 
-  it("falls back to the first line and truncates long text at a word", async () => {
+  it("uses the fallback title without an H1 and truncates the description", async () => {
     const line = "word ".repeat(60).trim();
     const html = await pageFor(`${line}\nA second line.`);
     const title = /<title>(.*) · Test Blog<\/title>/.exec(html)![1]!;
-    expect(title.length).toBeLessThanOrEqual(70);
-    expect(title.endsWith("word…")).toBe(true);
+    expect(title).toBe("Post");
     const description = /<meta name="description" content="([^"]*)">/.exec(html)![1]!;
     expect(description.length).toBeLessThanOrEqual(160);
   });
@@ -494,7 +630,7 @@ describe("Atom feed", () => {
     const xml = await (await request(`${publicOrigin}/feed.xml`)).text();
     expect(xml.indexOf(newer.id)).toBeLessThan(xml.indexOf(older.id));
     expect(xml).toContain(`<id>urn:uuid:${newer.id}</id>`);
-    expect(xml).toContain(`href="${publicOrigin}/posts/${newer.id}"`);
+    expect(xml).toContain(`href="${publicOrigin}/posts/${newer.slug}"`);
     expect(xml).toContain(`rel="self" type="application/atom+xml" href="${publicOrigin}/feed.xml"`);
     expect(xml).toContain("<title>Newer &amp; &lt;better&gt;</title>");
     expect(xml).toContain("&lt;strong&gt;bold&lt;/strong&gt;");
@@ -548,7 +684,7 @@ describe("Markdown pages", () => {
     ["text/markdown, text/html;q=oops", "text/html"],
   ])("answers Accept: %s with %s", async (accept, type) => {
     const post = await new Posts(env.DB).create("Hello");
-    for (const path of ["/", `/posts/${post.id}`]) {
+    for (const path of ["/", `/posts/${post.slug}`]) {
       const response = await request(`${publicOrigin}${path}`, { headers: accept ? { Accept: accept } : {} });
       expect(response.headers.get("Content-Type")).toBe(`${type}; charset=utf-8`);
       expect(response.headers.get("Vary")).toBe("Accept");
@@ -558,7 +694,7 @@ describe("Markdown pages", () => {
   it("serves a post exactly as written beneath escaped front matter", async () => {
     const source = '# A "quoted" title\n\nThe **first** paragraph.\n\n[ref]: https://example.com';
     const post = await new Posts(env.DB).create(source);
-    const url = `${publicOrigin}/posts/${post.id}`;
+    const url = `${publicOrigin}/posts/${post.slug}`;
     const response = await request(url, markdown);
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
@@ -571,9 +707,9 @@ describe("Markdown pages", () => {
 
   it("serves the same post at its .md URL, whatever Accept says", async () => {
     const post = await new Posts(env.DB).create("# Title\n\nBody");
-    const expected = await (await request(`${publicOrigin}/posts/${post.id}`, markdown)).text();
+    const expected = await (await request(`${publicOrigin}/posts/${post.slug}`, markdown)).text();
     for (const headers of [{ Accept: browser }, {}] as HeadersInit[]) {
-      const response = await request(`${publicOrigin}/posts/${post.id}.md`, { headers });
+      const response = await request(`${publicOrigin}/posts/${post.slug}.md`, { headers });
       expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
       expect(await response.text()).toBe(expected);
     }
@@ -582,7 +718,7 @@ describe("Markdown pages", () => {
   it("never serves a post's source as HTML", async () => {
     const post = await new Posts(env.DB).create("<script>alert(1)</script>");
     for (const init of [markdown, { headers: { Accept: "text/plain" } }]) {
-      for (const path of ["/", `/posts/${post.id}`]) {
+      for (const path of ["/", `/posts/${post.slug}`]) {
         const response = await request(`${publicOrigin}${path}`, init);
         expect(response.headers.get("Content-Type")).not.toContain("html");
         expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
@@ -597,9 +733,9 @@ describe("Markdown pages", () => {
     const home = await request(`${publicOrigin}/`);
     expect(home.headers.get("Link")).toBe('</index.md>; rel="alternate"; type="text/markdown"');
     expect(await home.text()).toContain('<link rel="alternate" type="text/markdown" href="/index.md">');
-    const page = await request(`${publicOrigin}/posts/${post.id}`);
-    expect(page.headers.get("Link")).toBe(`</posts/${post.id}.md>; rel="alternate"; type="text/markdown"`);
-    expect(await page.text()).toContain(`<link rel="alternate" type="text/markdown" href="/posts/${post.id}.md">`);
+    const page = await request(`${publicOrigin}/posts/${post.slug}`);
+    expect(page.headers.get("Link")).toBe(`</posts/${post.slug}.md>; rel="alternate"; type="text/markdown"`);
+    expect(await page.text()).toContain(`<link rel="alternate" type="text/markdown" href="/posts/${post.slug}.md">`);
   });
 
   it("matches the timeline, with a permalink for each post and a guide for agents", async () => {
@@ -611,8 +747,8 @@ describe("Markdown pages", () => {
     expect(response.headers.get("Link")).toBe(`<${publicOrigin}/>; rel="canonical"`);
     expect(await response.text()).toBe([
       "# Test Blog", "", "Notes for the test suite.", "", `Guide for agents: [llms.txt](${publicOrigin}/llms.txt)`, "", "---", "",
-      `[${newer.created_at}](${publicOrigin}/posts/${newer.id})`, "", "Newer body.", "", "---", "",
-      `[${older.created_at}](${publicOrigin}/posts/${older.id})`, "", "# Older", "", "Older body.", "",
+      `[${newer.created_at}](${publicOrigin}/posts/${newer.slug})`, "", "Newer body.", "", "---", "",
+      `[${older.created_at}](${publicOrigin}/posts/${older.slug})`, "", "# Older", "", "Older body.", "",
     ].join("\n"));
     expect(await (await request(`${publicOrigin}/index.md`)).text()).toContain("Newer body.");
   });
@@ -670,11 +806,11 @@ describe("Markdown pages", () => {
 
   it("supports HEAD, and leaves other paths alone", async () => {
     const post = await new Posts(env.DB).create("Hello");
-    const head = await request(`${publicOrigin}/posts/${post.id}.md`, { method: "HEAD" });
+    const head = await request(`${publicOrigin}/posts/${post.slug}.md`, { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(head.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
     expect(await head.text()).toBe("");
-    expect((await request(`${publicOrigin}/posts/${post.id}.md`, { method: "POST" })).status).toBe(405);
+    expect((await request(`${publicOrigin}/posts/${post.slug}.md`, { method: "POST" })).status).toBe(405);
     expect((await request(`${publicOrigin}/feed.xml`, markdown)).headers.get("Content-Type")).toBe("application/atom+xml; charset=utf-8");
     expect((await request(`${publicOrigin}/style.css`, markdown)).headers.get("Content-Type")).toContain("text/css");
     expect((await request(`${publicOrigin}/feed.xml.md`)).status).toBe(404);
@@ -711,7 +847,7 @@ describe("agent discovery", () => {
     const text = await response.text();
     expect(text.startsWith("# Test Blog\n\n> Notes for the test suite.\n\n")).toBe(true);
     expect(text).toContain("`Accept: text/markdown`");
-    expect(text).toContain(`## Recent posts\n\n- [First post](${publicOrigin}/posts/${post.id}.md): A summary.\n`);
+    expect(text).toContain(`## Recent posts\n\n- [First post](${publicOrigin}/posts/${post.slug}.md): A summary.\n`);
     expect(text).toContain(`## Optional\n\n- [Atom feed](${publicOrigin}/feed.xml)`);
     expect(text).toContain(`- [Sitemap](${publicOrigin}/sitemap.xml)`);
   });
@@ -823,10 +959,62 @@ describe("cache headers", () => {
     }
     expect((await request(`${publicOrigin}/feed.xml`)).headers.get("Cache-Control")).toBe("public, max-age=300");
     const post = await new Posts(env.DB).create("Fresh");
-    for (const path of ["/", `/posts/${post.id}`, "/unknown", "/?before=malformed"]) {
+    for (const path of ["/", `/posts/${post.slug}`, "/unknown", "/?before=malformed"]) {
       expect((await request(`${publicOrigin}${path}`)).headers.get("Cache-Control")).toBe("no-store");
     }
     expect((await request(`${publicOrigin}/`, { method: "POST" })).headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("legacy slug backfill", () => {
+  async function legacyPost(markdown: string, createdAt: string): Promise<Post> {
+    return (await env.DB.prepare(
+      "INSERT INTO posts (id, markdown, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?) RETURNING id, slug, markdown, created_at, updated_at, version",
+    ).bind(crypto.randomUUID(), markdown, createdAt, "2026-11-04T18:00:00.000Z", 3).first<Post>())!;
+  }
+
+  it("backfills in publication order without changing content or metadata and can be rerun", async () => {
+    const newer = await legacyPost("# The Future Was Free\n\nNewer post.", "2026-11-04T13:00:00.000Z");
+    const original = await legacyPost("# The Future Was Free\n\nOriginal post.", "2026-11-04T12:00:00.000Z");
+    const note = await legacyPost("A short note.", "2026-11-04T14:00:00.000Z");
+    const posts = new Posts(env.DB);
+    expect(original.slug).toBeNull();
+    const oldPage = await request(`${publicOrigin}/posts/${original.id}`);
+    expect(oldPage.status).toBe(200);
+    expect(await oldPage.text()).toContain("Original post.");
+    expect(await backfillSlugs(slugQuery)).toBe(3);
+    expect(await posts.get(original.id)).toEqual({ ...original, slug: "the-future-was-free" });
+    expect(await posts.get(newer.id)).toEqual({ ...newer, slug: "the-future-was-free-2" });
+    expect(await posts.get(note.id)).toEqual({ ...note, slug: "post" });
+    expect(await backfillSlugs(slugQuery)).toBe(0);
+    expect((await request(`${publicOrigin}/posts/${original.id}`)).headers.get("Location")).toBe("/posts/the-future-was-free");
+  });
+
+  it("respects slugs allocated by concurrent publication", async () => {
+    const legacy = await legacyPost("# Shared title", "2026-11-04T12:00:00.000Z");
+    const posts = new Posts(env.DB);
+    let published: Post | undefined;
+    const query: SlugQuery = async (sql, params) => {
+      if (!published && sql.startsWith("UPDATE posts SET slug")) published = await posts.create("# Shared title");
+      return slugQuery(sql, params);
+    };
+    expect(await backfillSlugs(query)).toBe(1);
+    expect(published?.slug).toBe("shared-title");
+    expect((await posts.get(legacy.id)).slug).toBe("shared-title-2");
+  });
+
+  it("rereads a concurrently edited heading before assigning its slug", async () => {
+    const legacy = await legacyPost("# Original heading", "2026-11-04T12:00:00.000Z");
+    const posts = new Posts(env.DB);
+    let edited: Post | undefined;
+    const query: SlugQuery = async (sql, params) => {
+      if (!edited && sql.startsWith("UPDATE posts SET slug")) {
+        edited = await posts.update(legacy.id, "# Revised heading", legacy.version);
+      }
+      return slugQuery(sql, params);
+    };
+    expect(await backfillSlugs(query)).toBe(1);
+    expect(await posts.get(legacy.id)).toEqual({ ...edited, slug: "revised-heading" });
   });
 });
 

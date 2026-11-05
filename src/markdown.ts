@@ -1,4 +1,5 @@
 import type { Site } from "./html";
+import { postPath } from "./post-metadata";
 import type { PostPage, PublishedPost } from "./types";
 
 export type TextType = "text/markdown" | "text/plain";
@@ -31,7 +32,7 @@ export function markdownPost(site: Site, post: PublishedPost): string {
   const fields = Object.entries({
     title: post.title,
     description: post.summary,
-    url: `${site.origin}/posts/${post.id}`,
+    url: `${site.origin}${postPath(post)}`,
     published: post.created_at,
     updated: post.updated_at,
   }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
@@ -40,7 +41,7 @@ export function markdownPost(site: Site, post: PublishedPost): string {
 
 export function markdownTimeline(site: Site, page: PostPage): string {
   const heading = `# ${plainMarkdown(site.title)}\n\n${plainMarkdown(site.description)}\n\nGuide for agents: [llms.txt](${site.origin}/llms.txt)`;
-  const posts = page.posts.map((post) => `[${post.created_at}](${site.origin}/posts/${post.id})\n\n${post.markdown}`);
+  const posts = page.posts.map((post) => `[${post.created_at}](${site.origin}${postPath(post)})\n\n${post.markdown}`);
   const older = page.next_cursor ? [`[Older posts](${site.origin}/index.md?before=${encodeURIComponent(page.next_cursor)})`] : [];
   return `${[heading, ...(posts.length ? posts : ["No posts yet."]), ...older].join(SEPARATOR)}\n`;
 }

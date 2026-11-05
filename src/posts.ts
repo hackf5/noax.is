@@ -1,4 +1,5 @@
 import { RENDER_VERSION, renderMarkdown } from "./render";
+import { parsePost, slugCandidate, slugifyTitle } from "./post-metadata";
 import { PostError, type Post, type PostPage, type PublishedPost, type Rendered, type SitemapBucket, type SitemapPost } from "./types";
 
 export const PAGE_SIZE = 20;
@@ -6,7 +7,7 @@ export const MAX_MARKDOWN_LENGTH = 64_000;
 export const SITEMAP_SIZE = 1000;
 
 // Naming these keeps the rendered columns out of MCP responses.
-const POST_COLUMNS = "id, markdown, created_at, updated_at, version";
+const POST_COLUMNS = "id, slug, markdown, created_at, updated_at, version";
 
 type StoredPost = Post & { [key in keyof Rendered]: string | null } & { render_version: number | null };
 
@@ -99,6 +100,12 @@ export class Posts {
     return this.published(post);
   }
 
+  async getBySlug(slug: string): Promise<PublishedPost> {
+    const post = await this.db.prepare("SELECT * FROM posts WHERE slug = ?").bind(slug).first<StoredPost>();
+    if (!post) throw new PostError("not_found", "Post not found.");
+    return this.published(post);
+  }
+
   // Sitemaps are split on rowid: it's unique, so a bucket can't outgrow SITEMAP_SIZE however posts
   // were created, and deleting a post moves no other. Neither query renders, so the cost of a
   // request doesn't depend on the render cache. SITEMAP_SIZE is written into the SQL because D1 can
@@ -111,7 +118,7 @@ export class Posts {
   }
 
   async sitemapPosts(bucket: number): Promise<SitemapPost[]> {
-    const { results } = await this.db.prepare("SELECT id, updated_at FROM posts WHERE rowid >= ? AND rowid < ? ORDER BY rowid")
+    const { results } = await this.db.prepare("SELECT id, slug, updated_at FROM posts WHERE rowid >= ? AND rowid < ? ORDER BY rowid")
       .bind(bucket * SITEMAP_SIZE, (bucket + 1) * SITEMAP_SIZE).all<SitemapPost>();
     return results;
   }
@@ -120,11 +127,15 @@ export class Posts {
     validateMarkdown(markdown);
     const { html, title, summary } = this.render(markdown);
     const timestamp = new Date().toISOString();
-    const post = await this.db.prepare(
-      `INSERT INTO posts (id, markdown, html, title, summary, render_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${POST_COLUMNS}`,
-    ).bind(crypto.randomUUID(), markdown, html, title, summary, RENDER_VERSION, timestamp, timestamp).first<Post>();
-    if (!post) throw new Error("Post insert returned no result.");
-    return post;
+    const id = crypto.randomUUID();
+    const base = slugifyTitle(parsePost(markdown).title);
+    const insert = this.db.prepare(
+      `INSERT INTO posts (id, slug, markdown, html, title, summary, render_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO NOTHING RETURNING ${POST_COLUMNS}`,
+    );
+    for (let attempt = 1; ; attempt++) {
+      const post = await insert.bind(id, slugCandidate(base, attempt), markdown, html, title, summary, RENDER_VERSION, timestamp, timestamp).first<Post>();
+      if (post) return post;
+    }
   }
 
   async update(id: string, markdown: string, expectedVersion: number): Promise<Post> {

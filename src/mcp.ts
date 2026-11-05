@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 import { MAX_MARKDOWN_LENGTH, Posts } from "./posts";
+import { postPath } from "./post-metadata";
 import { PostError, type Env, type Post } from "./types";
 
 const id = z.uuid();
@@ -9,6 +10,7 @@ const markdown = z.string().max(MAX_MARKDOWN_LENGTH).refine((value) => value.tri
 const version = z.number().int().positive();
 const postSchema = z.object({
   id,
+  slug: z.string().nullable(),
   markdown: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -19,7 +21,7 @@ const postResultSchema = z.object({ post: postSchema });
 
 export function createServer(env: Env): McpServer {
   const posts = new Posts(env.DB);
-  const publicPost = (post: Post) => ({ ...post, url: `https://${env.PUBLIC_HOST}/posts/${post.id}` });
+  const publicPost = (post: Post) => ({ ...post, url: `https://${env.PUBLIC_HOST}${postPath(post)}` });
   const server = new McpServer({ name: env.SITE_TITLE, version: "0.1.0" }, {
     instructions: `Manage the single-author ${env.SITE_TITLE} microblog. create_post immediately publishes publicly; update_post changes a live post; delete_post permanently deletes it. Publish or delete only when the user requests that action. Review drafts in the conversation. Read get_post before editing/deleting and pass its version as expected_version. On conflict, fetch and review again; do not blindly retry. If creation times out, list posts before retrying to avoid duplicates.`,
   });

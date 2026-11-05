@@ -1,24 +1,23 @@
-import MarkdownIt from "markdown-it";
+import { markdown, parsePost } from "./post-metadata";
 import type { Rendered } from "./types";
 
 // Stored posts are a cache of this output. Bump this whenever renderMarkdown's output changes,
 // and posts rebuild as they're read.
-export const RENDER_VERSION = 1;
+export const RENDER_VERSION = 2;
 
-const TITLE_LENGTH = 70;
 const SUMMARY_LENGTH = 160;
 
-const markdown = new MarkdownIt("commonmark", { html: false }).disable("image");
 type Token = ReturnType<typeof markdown.parse>[number];
 
 const defaultFence = markdown.renderer.rules.fence!;
 markdown.renderer.rules.fence = (tokens, index, options, env, renderer) =>
   defaultFence(tokens, index, options, env, renderer).replace("<pre>", '<pre tabindex="0">');
 for (const rule of ["heading_open", "heading_close"] as const) {
-  markdown.renderer.rules[rule] = (tokens, index) => {
+  markdown.renderer.rules[rule] = (tokens, index, _options, env) => {
     const token = tokens[index]!;
     const level = Math.min(Number(token.tag.slice(1)) + 1, 6);
-    return rule === "heading_open" ? `<h${level}>` : `</h${level}>\n`;
+    const marker = env?.titleIndex === index ? "<!--post-title-->" : "";
+    return rule === "heading_open" ? `${marker}<h${level}>` : `</h${level}>\n`;
   };
 }
 const defaultCodeBlock = markdown.renderer.rules.code_block!;
@@ -41,13 +40,11 @@ function truncate(text: string, limit: number): string {
 }
 
 export function renderMarkdown(source: string): Rendered {
-  const tokens = markdown.parse(source, {});
+  const { tokens, titleIndex, title } = parsePost(source);
   const blocks = tokens.filter((token) => token.type === "inline").map(plainText).filter((text) => text.trim());
-  const first = blocks[0] ?? "";
   const body = tokens[0]?.type === "heading_open" ? blocks.slice(1) : blocks;
-  const title = truncate(first.split("\n")[0]!, TITLE_LENGTH) || "Post";
   return {
-    html: markdown.renderer.render(tokens, markdown.options, {}),
+    html: markdown.renderer.render(tokens, markdown.options, { titleIndex }),
     title,
     summary: truncate(body.join(" "), SUMMARY_LENGTH) || title,
   };

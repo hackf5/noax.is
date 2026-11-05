@@ -1,6 +1,7 @@
 import { xml } from "./feed";
 import type { Site } from "./html";
 import { plainMarkdown } from "./markdown";
+import { postPath } from "./post-metadata";
 import type { PublishedPost, SitemapBucket, SitemapPost } from "./types";
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>\n';
@@ -11,7 +12,7 @@ export function robotsTxt(site: Site): string {
 }
 
 export function llmsTxt(site: Site, posts: PublishedPost[]): string {
-  const recent = posts.map((post) => `- [${plainMarkdown(post.title)}](${site.origin}/posts/${post.id}.md): ${plainMarkdown(post.summary)}`);
+  const recent = posts.map((post) => `- [${plainMarkdown(post.title)}](${site.origin}${postPath(post)}.md): ${plainMarkdown(post.summary)}`);
   return `# ${plainMarkdown(site.title)}
 
 > ${plainMarkdown(site.description)}
@@ -54,5 +55,5 @@ export function pagesSitemap(site: Site): string {
 }
 
 export function postsSitemap(site: Site, posts: SitemapPost[]): string {
-  return urlset(posts.map((post) => entry("url", `${site.origin}/posts/${post.id}`, post.updated_at)));
+  return urlset(posts.map((post) => entry("url", `${site.origin}${postPath(post)}`, post.updated_at)));
 }

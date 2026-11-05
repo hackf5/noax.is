@@ -6,6 +6,7 @@ import { atomFeed } from "./feed";
 import { errorPage, postPage, siteFrom, stylesheet, timeline } from "./html";
 import { markdownError, markdownPost, markdownTimeline, preferredText, type TextType } from "./markdown";
 import { handleMcp } from "./mcp";
+import { postPath, UUID_PATTERN } from "./post-metadata";
 import { Posts } from "./posts";
 import { PostError, type Env } from "./types";
 
@@ -22,7 +23,7 @@ const CACHE_FEED = "public, max-age=300";
 const TYPE_TEXT = "text/plain; charset=utf-8";
 const TYPE_XML = "application/xml; charset=utf-8";
 
-const POST_PATH = /^\/posts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.md)?$/;
+const POST_PATH = /^\/posts\/([a-z0-9]+(?:-[a-z0-9]+)*)(\.md)?$/;
 const SITEMAP_POSTS_PATH = /^\/sitemap-posts-(0|[1-9]\d{0,8})\.xml$/;
 
 function respond(body: BodyInit | null, status = 200, type = "text/html; charset=utf-8", cache = "no-store"): Response {
@@ -101,10 +102,15 @@ export default {
           const rows = await posts.sitemapPosts(Number(sitemap[1]));
           response = rows.length ? respond(postsSitemap(site, rows), 200, TYPE_XML, CACHE_FEED) : failure("Not found", 404);
         } else if (post) {
-          const found = await posts.getPublished(post[1]!);
-          response = text
-            ? markdownPage(markdownPost(site, found), text, 200, `${site.origin}/posts/${found.id}`)
-            : htmlPage(postPage(site, found), 200, `/posts/${found.id}.md`);
+          const key = post[1]!;
+          const found = await (UUID_PATTERN.test(key) ? posts.getPublished(key) : posts.getBySlug(key));
+          const canonical = postPath(found);
+          const path = `${canonical}${post[2] ?? ""}`;
+          response = url.pathname !== path
+            ? new Response(null, { status: 301, headers: { ...securityHeaders, "Cache-Control": "no-store", Location: path } })
+            : text
+              ? markdownPage(markdownPost(site, found), text, 200, `${site.origin}${canonical}`)
+              : htmlPage(postPage(site, found), 200, `${canonical}.md`);
         } else {
           response = failure("Not found", 404);
         }

@@ -12,6 +12,7 @@ export interface Env {
 
 export interface Post {
   id: string;
+  slug: string | null;
   markdown: string;
   created_at: string;
   updated_at: string;
@@ -36,7 +37,7 @@ export interface SitemapBucket {
   lastmod: string;
 }
 
-export type SitemapPost = Pick<Post, "id" | "updated_at">;
+export type SitemapPost = Pick<Post, "id" | "slug" | "updated_at">;
 
 export class PostError extends Error {
   constructor(
