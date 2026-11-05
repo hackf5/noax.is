@@ -15,6 +15,7 @@ Stop reading now and point the agent at this page. It will take it from here.
 ## How it works
 
 - **The public site** is server-rendered HTML with no JavaScript, a strict Content Security Policy and an Atom feed at `/feed.xml`.
+- **Agents** can read every page as Markdown, and find their way around with `/llms.txt`, `/robots.txt` and `/sitemap.xml`.
 - **Publishing** happens through a private MCP endpoint on its own hostname, protected by Cloudflare Access.
 - **Posts** are Markdown stored in D1, not in Git, so publishing needs no deploy. Creating a post publishes it immediately.
 
@@ -88,6 +89,22 @@ To give your agent a house style, copy `EDITORIAL.example.md` to `EDITORIAL.md` 
 
 Posts must contain text and fit within 64,000 characters. Markdown supports paragraphs, headings, emphasis, lists, quotes, links and code. Raw HTML and images are disabled. A post's page title and description come from its first heading or line and the text that follows.
 
+## Read it as an agent
+
+Every page has a Markdown version. A post is its source exactly as written, beneath front matter giving its title, description, URL and dates. That means it shows anything in a post that the HTML page doesn't.
+
+| URL | What it gives |
+| --- | --- |
+| `/`, `/posts/<id>` with `Accept: text/markdown` | The page as Markdown. `Accept: text/plain` gets the same text as `text/plain`. |
+| `/index.md`, `/posts/<id>.md` | The same, for clients that can't set headers. |
+| `/llms.txt` | A guide for agents, with the newest posts. |
+| `/robots.txt` | Crawl rules, your `content_signal` and the sitemap's location. |
+| `/sitemap.xml` | An index of sitemaps, each listing up to 1,000 posts. |
+
+Browsers, and any client that doesn't ask for Markdown or prefer plain text, get HTML.
+
+Cloudflare can add its own text above your `robots.txt`, depending on the zone's AI crawler settings. `npm run smoke` checks that the `Sitemap:` line survives.
+
 ## Configure
 
 Settings live in `.local/site.json`. Run `npm run deploy` after changing them.
@@ -99,10 +116,11 @@ Settings live in `.local/site.json`. Run `npm run deploy` after changing them.
 | `title` | `public_host` | Shown in the header, page titles and feed. |
 | `description` | `Notes on` + `title` | The default page description and feed subtitle. |
 | `locale` | `en` | Page language and date format. Times are shown in UTC. |
+| `content_signal` | `search=yes, ai-input=yes` | How AI systems may use your posts, published in `robots.txt`. Add `ai-train=yes` or `ai-train=no` to state a preference on training. Compliance is voluntary. |
 
 If you change `mcp_host`, also update `NOAX_MCP_URL` in `.local/mcp.env` and run `npm run cloudflare:provision`.
 
-For anything else, change the code. It's about 500 lines, and the styling is one stylesheet in `src/html.ts`. Fork the repository if you want to keep those changes.
+For anything else, change the code. It's about 700 lines, and the styling is one stylesheet in `src/html.ts`. Fork the repository if you want to keep those changes.
 
 ## Costs
 
@@ -121,6 +139,8 @@ A page view normally costs one Worker request, as browsers cache the stylesheet 
 Rendered output is a cache, so posts pick up rendering changes automatically after an update. Each post is rebuilt the first time it's read and saved straight away. On the Free plan, a page of long posts can exceed the CPU limit while this happens and show a Cloudflare error. No work is lost, though, so the page loads after a few refreshes.
 
 If you go over a daily limit on the Free plan, you get errors rather than a bill, and the limits reset at 00:00 UTC. The Worker has no rate limiting of its own, so anyone sending enough requests can use up the day's allowance.
+
+Sitemaps cost more than pages. A full sitemap file reads 1,000 rows and `/sitemap.xml` reads every post, where a page reads about 20. On a blog with thousands of posts, about 5,000 repeat requests would use up the day's D1 reads, and every page would fail until the reset. Cache headers don't prevent this, as the Worker still runs for each request. Sitemaps are split so that each request stays within the CPU limit however many posts there are.
 
 These limits come from Cloudflare's [Workers](https://developers.cloudflare.com/workers/platform/limits/) and [D1](https://developers.cloudflare.com/d1/platform/limits/) documentation. Check there for current figures.
 
@@ -166,7 +186,7 @@ The Access service token lasts a year, and publishing stops when it expires. `np
 
 ### Verify a deployment
 
-`npm run smoke` checks publishing end to end. It briefly publishes a clearly labelled post, tests editing and conflict handling, and deletes it, so only run it if a short-lived public post is acceptable.
+`npm run smoke` checks publishing and agent access end to end. It briefly publishes a clearly labelled post, tests editing and conflict handling, and deletes it, so only run it if a short-lived public post is acceptable.
 
 ## Develop
 

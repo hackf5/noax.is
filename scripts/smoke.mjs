@@ -42,6 +42,16 @@ try {
   assert.equal(page.status, 200);
   assert.match(await page.text(), /<strong>Markdown<\/strong>/);
   console.log("MCP authentication, discovery, publishing and public Markdown rendering passed.");
+  // Only a live check shows that nothing at the edge changes these.
+  const source = await fetch(created.url, { headers: { Accept: "text/markdown" } });
+  assert.match(source.headers.get("Content-Type"), /^text\/markdown/);
+  assert.match(await source.text(), /A \*\*Markdown\*\* verification post/);
+  const { origin } = new URL(created.url);
+  const robots = await (await fetch(`${origin}/robots.txt`)).text();
+  assert.ok(robots.split("\n").includes(`Sitemap: ${origin}/sitemap.xml`), "robots.txt lost its Sitemap line");
+  assert.match(await (await fetch(`${origin}/sitemap.xml`)).text(), /sitemap-pages\.xml/);
+  assert.equal((await fetch(`${origin}/llms.txt`)).status, 200);
+  console.log("Markdown negotiation, robots.txt, the sitemap index and llms.txt passed.");
   const updated = (await call("update_post", { id: created.id, markdown: `${marker}\n\nEdited successfully.`, expected_version: created.version })).post;
   assert.equal(updated.version, 2);
   assert.equal(updated.created_at, created.created_at);

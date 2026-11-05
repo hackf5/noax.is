@@ -1,8 +1,9 @@
 import { RENDER_VERSION, renderMarkdown } from "./render";
-import { PostError, type Post, type PostPage, type PublishedPost, type Rendered } from "./types";
+import { PostError, type Post, type PostPage, type PublishedPost, type Rendered, type SitemapBucket, type SitemapPost } from "./types";
 
 export const PAGE_SIZE = 20;
 export const MAX_MARKDOWN_LENGTH = 64_000;
+export const SITEMAP_SIZE = 1000;
 
 // Naming these keeps the rendered columns out of MCP responses.
 const POST_COLUMNS = "id, markdown, created_at, updated_at, version";
@@ -96,6 +97,23 @@ export class Posts {
     const post = await this.db.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<StoredPost>();
     if (!post) throw new PostError("not_found", "Post not found.");
     return this.published(post);
+  }
+
+  // Sitemaps are split on rowid: it's unique, so a bucket can't outgrow SITEMAP_SIZE however posts
+  // were created, and deleting a post moves no other. Neither query renders, so the cost of a
+  // request doesn't depend on the render cache. SITEMAP_SIZE is written into the SQL because D1 can
+  // bind numbers as REAL, which would turn this into float division and one bucket per post.
+  async sitemapBuckets(): Promise<SitemapBucket[]> {
+    const { results } = await this.db.prepare(
+      `SELECT rowid / ${SITEMAP_SIZE} AS bucket, MAX(updated_at) AS lastmod FROM posts GROUP BY bucket ORDER BY bucket`,
+    ).all<SitemapBucket>();
+    return results;
+  }
+
+  async sitemapPosts(bucket: number): Promise<SitemapPost[]> {
+    const { results } = await this.db.prepare("SELECT id, updated_at FROM posts WHERE rowid >= ? AND rowid < ? ORDER BY rowid")
+      .bind(bucket * SITEMAP_SIZE, (bucket + 1) * SITEMAP_SIZE).all<SitemapPost>();
+    return results;
   }
 
   async create(markdown: string): Promise<Post> {

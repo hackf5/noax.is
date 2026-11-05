@@ -48,6 +48,8 @@ Then you can do the rest:
 - Run `npm run db:migrate:local` before `npm run dev`. Local publishing is tested through the authenticated integration suite; production Access authentication is never disabled for local development.
 - Public routes must never dispatch MCP operations. All deployed MCP requests require a verified Cloudflare Access JWT.
 - Keep instance data out of tracked files. `wrangler.jsonc` is a local development config; production values are generated into `.local/wrangler.deploy.jsonc` by `scripts/site-config.mjs`.
+- Every page must exist as HTML and Markdown. Build responses with `htmlPage` and `markdownPage` in `src/index.ts`; `respond()` defaults to HTML, so never pass it Markdown without a type.
+- Sitemaps and the Markdown timeline must never render, and a sitemap response must stay bounded by `SITEMAP_SIZE`, so a request's CPU doesn't grow with the number of posts. Write `SITEMAP_SIZE` into the SQL rather than binding it.
 - Stored HTML, titles and summaries are a cache of the Markdown. Bump `RENDER_VERSION` in `src/render.ts` whenever rendered output changes; posts then rebuild as they're read.
 - `.local/`, `.dev.vars`, and environment files contain credentials and must stay ignored. Never print token values or commit them.
 - Provisioning must not overwrite another Worker's domain bindings or broaden existing Access policies.

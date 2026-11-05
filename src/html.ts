@@ -5,6 +5,7 @@ export interface Site {
   description: string;
   locale: string;
   origin: string;
+  contentSignal: string;
 }
 
 export function siteFrom(env: Env): Site {
@@ -13,6 +14,7 @@ export function siteFrom(env: Env): Site {
     description: env.SITE_DESCRIPTION,
     locale: env.SITE_LOCALE,
     origin: `https://${env.PUBLIC_HOST}`,
+    contentSignal: env.SITE_CONTENT_SIGNAL,
   };
 }
 
@@ -21,6 +23,7 @@ interface PageMeta {
   description?: string;
   canonical?: string;
   published?: string;
+  markdown?: string;
 }
 
 export function escapeHtml(value: string): string {
@@ -68,8 +71,9 @@ function layout(site: Site, content: string, meta: PageMeta = {}): string {
         ...(meta.published ? [ogTag("article:published_time", meta.published)] : []),
       ].join("")}`
     : "";
+  const markdown = meta.markdown ? `<link rel="alternate" type="text/markdown" href="${escapeHtml(meta.markdown)}">` : "";
   return `<!doctype html>
-<html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml"><link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
+<html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml">${markdown}<link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css"></head>
 <body><div class="page"><header><h1><a href="/">${escapeHtml(site.title)}</a></h1></header><main>${content}</main></div></body></html>`;
 }
 
@@ -82,13 +86,13 @@ function renderPost(post: PublishedPost, dates: Intl.DateTimeFormat): string {
   return `<article><a href="/posts/${post.id}"><time datetime="${escapeHtml(post.created_at)}">${escapeHtml(date)} UTC</time></a><div class="body">${post.html}</div></article>`;
 }
 
-export function timeline(site: Site, page: PostPage<PublishedPost>, firstPage: boolean): string {
+export function timeline(site: Site, page: PostPage<PublishedPost>, firstPage: boolean, markdown: string): string {
   const dates = dateFormat(site);
   const posts = page.posts.map((post) => renderPost(post, dates)).join("") || '<p class="quiet">No posts yet.</p>';
   const navigation = page.next_cursor
     ? `<nav aria-label="Pagination"><a href="/?before=${encodeURIComponent(page.next_cursor)}">Older posts</a></nav>`
     : "";
-  return layout(site, posts + navigation, firstPage ? { canonical: `${site.origin}/` } : {});
+  return layout(site, posts + navigation, firstPage ? { canonical: `${site.origin}/`, markdown } : { markdown });
 }
 
 export function postPage(site: Site, post: PublishedPost): string {
@@ -97,6 +101,7 @@ export function postPage(site: Site, post: PublishedPost): string {
     description: post.summary,
     canonical: `${site.origin}/posts/${post.id}`,
     published: post.created_at,
+    markdown: `/posts/${post.id}.md`,
   });
 }
 

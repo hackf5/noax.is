@@ -15,6 +15,7 @@ export default defineConfig({
         SITE_TITLE: "Test Blog",
         SITE_DESCRIPTION: "Notes for the test suite.",
         SITE_LOCALE: "en-GB",
+        SITE_CONTENT_SIGNAL: "search=yes, ai-input=yes, ai-train=no",
       },
     },
   })],

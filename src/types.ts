@@ -7,6 +7,7 @@ export interface Env {
   SITE_TITLE: string;
   SITE_DESCRIPTION: string;
   SITE_LOCALE: string;
+  SITE_CONTENT_SIGNAL: string;
 }
 
 export interface Post {
@@ -29,6 +30,13 @@ export interface PostPage<T = Post> {
   posts: T[];
   next_cursor: string | null;
 }
+
+export interface SitemapBucket {
+  bucket: number;
+  lastmod: string;
+}
+
+export type SitemapPost = Pick<Post, "id" | "updated_at">;
 
 export class PostError extends Error {
   constructor(
