@@ -5,12 +5,14 @@ import { pathToFileURL } from "node:url";
 const root = new URL("../", import.meta.url);
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])$/;
 const CONTENT_SIGNAL = /^[a-z-]+=(yes|no)(, [a-z-]+=(yes|no))*$/;
+export const ANALYTICS_SECRET = "NOAX_ANALYTICS_TOKEN";
 
 export const paths = {
   base: new URL("wrangler.jsonc", root),
   site: new URL(".local/site.json", root),
   provisioning: new URL(".local/provisioning.json", root),
   credentials: new URL(".local/mcp.env", root),
+  analyticsSecrets: new URL(".local/analytics.secrets.json", root),
   deploy: new URL(".local/wrangler.deploy.jsonc", root),
   claude: new URL(".mcp.json", root),
   codexDir: new URL(".codex/", root),
@@ -45,6 +47,20 @@ export function validateSite(input) {
   if (typeof site.content_signal !== "string" || !CONTENT_SIGNAL.test(site.content_signal)) {
     throw new Error("Set content_signal in .local/site.json to pairs such as search=yes, ai-input=yes.");
   }
+  if (input.files != null) {
+    const { bucket_name, media_host } = input.files;
+    if (typeof bucket_name !== "string" || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket_name)) {
+      throw new Error("Set files.bucket_name to a dedicated R2 bucket name using 3–63 lowercase letters, numbers or hyphens.");
+    }
+    if (typeof media_host !== "string" || !HOSTNAME.test(media_host) || [site.public_host, site.mcp_host].includes(media_host)) {
+      throw new Error("Set files.media_host to a lowercase hostname distinct from the public and MCP hostnames.");
+    }
+    site.files = { bucket_name, media_host };
+  }
+  if (input.analytics !== undefined && typeof input.analytics !== "boolean") {
+    throw new Error("Set analytics to true or false in .local/site.json.");
+  }
+  if (input.analytics) site.analytics = true;
   return site;
 }
 
@@ -67,6 +83,12 @@ export function buildDeployConfig(base, site, provisioning) {
   for (const key of ["database_id", "access_aud", "access_team_domain"]) {
     if (!provisioning?.[key]) throw new Error(`.local/provisioning.json has no ${key}. Run npm run cloudflare:provision.`);
   }
+  if (site.files && (site.files.bucket_name !== provisioning.files?.bucket_name || site.files.media_host !== provisioning.files?.media_host)) {
+    throw new Error("File storage does not match the provisioned site. Run npm run cloudflare:provision.");
+  }
+  if (site.analytics && !provisioning.zone_id) {
+    throw new Error("Analytics needs the site's Cloudflare zone ID. Run npm run cloudflare:provision.");
+  }
   const { $schema, ...config } = base;
   const names = resourceNames(site);
   const [database] = base.d1_databases;
@@ -88,6 +110,8 @@ export function buildDeployConfig(base, site, provisioning) {
       SITE_DESCRIPTION: site.description,
       SITE_LOCALE: site.locale,
       SITE_CONTENT_SIGNAL: site.content_signal,
+      ...(site.files ? { MEDIA_HOST: site.files.media_host } : {}),
+      ...(site.analytics ? { ANALYTICS_ZONE_ID: provisioning.zone_id } : {}),
     },
     d1_databases: [{
       ...database,
@@ -95,6 +119,11 @@ export function buildDeployConfig(base, site, provisioning) {
       database_id: provisioning.database_id,
       migrations_dir: `../${database.migrations_dir}`,
     }],
+    ...(site.files ? { r2_buckets: [{ binding: "FILES", bucket_name: site.files.bucket_name }] } : {}),
+    ...(site.analytics ? { secrets: {
+      ...config.secrets,
+      required: [...new Set([...(config.secrets?.required ?? []), ANALYTICS_SECRET])],
+    } } : {}),
   };
 }
 
@@ -147,6 +176,7 @@ export async function generate() {
   await writeFile(paths.claude, claudeConfig(site));
   await mkdir(paths.codexDir, { recursive: true });
   await writeFile(paths.codex, codexConfig(site));
+  return { site, config };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

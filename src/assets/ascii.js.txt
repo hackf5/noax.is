@@ -1,0 +1,208 @@
+const ramp = "@%#*+=-:. ";
+const maxColumns = 144;
+const maxRows = 96;
+const minimumContrast = 4.5;
+const theme = matchMedia("(prefers-color-scheme: dark)");
+
+function brightness(red, green, blue) {
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+const linear = Array.from({ length: 256 }, (_, byte) => {
+  const channel = byte / 255;
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+});
+
+function luminance([red, green, blue]) {
+  return brightness(linear[red], linear[green], linear[blue]);
+}
+
+function contrast(a, b) {
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+function rgb(style) {
+  return style.match(/\d+/g).slice(0, 3).map(Number);
+}
+
+function paletteFor(ink, paperTone) {
+  const colors = new Map();
+  return (red, green, blue) => {
+    // Four bits per channel. Each quantized color gets one contrast correction per palette.
+    const channels = [red, green, blue].map((channel) => Math.round(channel / 17));
+    const key = (channels[0] << 8) | (channels[1] << 4) | channels[2];
+    const existing = colors.get(key);
+    if (existing) return existing;
+
+    const sample = channels.map((channel) => channel * 17);
+    let visible = sample;
+    if (contrast(luminance(sample), paperTone) < minimumContrast) {
+      visible = ink;
+      let low = 0;
+      let high = 1;
+      for (let step = 0; step < 7; step++) {
+        const mix = (low + high) / 2;
+        const candidate = sample.map((channel, i) => Math.round(channel + (ink[i] - channel) * mix));
+        if (contrast(luminance(candidate), paperTone) >= minimumContrast) {
+          visible = candidate;
+          high = mix;
+        } else {
+          low = mix;
+        }
+      }
+    }
+    const brush = `rgb(${visible.join(",")})`;
+    colors.set(key, brush);
+    return brush;
+  };
+}
+
+function sampleTones(pixels) {
+  const histogram = new Uint32Array(256);
+  const tones = new Uint8Array(pixels.length / 4);
+  let visible = 0;
+  for (let i = 0; i < tones.length; i++) {
+    const at = i * 4;
+    if (!pixels[at + 3]) continue;
+    const tone = Math.round(brightness(pixels[at], pixels[at + 1], pixels[at + 2]));
+    tones[i] = tone;
+    histogram[tone]++;
+    visible++;
+  }
+  // Ignore the darkest and lightest few samples. Keep a minimum range for nearly flat images.
+  let low = 0;
+  let high = 255;
+  for (let skip = Math.floor(visible * 0.05); low < high && skip >= histogram[low];) skip -= histogram[low++];
+  for (let skip = Math.floor(visible * 0.05); high > low && skip >= histogram[high];) skip -= histogram[high--];
+  if (high - low < 32) {
+    low = Math.max(0, Math.min(223, Math.floor((low + high - 32) / 2)));
+    high = low + 32;
+  }
+  return { tones, low, high };
+}
+
+function rowText(output, sample, offset, columns, lightOnDark, palette) {
+  const { pixels, tones, low, high } = sample;
+  let run = "";
+  let previous;
+  const append = () => {
+    if (!run) return;
+    if (previous) {
+      const span = document.createElement("span");
+      span.style.color = previous;
+      span.textContent = run;
+      output.append(span);
+    } else {
+      output.append(run);
+    }
+  };
+  for (let column = 0; column < columns; column++) {
+    const cell = offset + column;
+    const index = cell * 4;
+    const lightness = Math.max(0, Math.min(1, (tones[cell] - low) / (high - low)));
+    const density = (lightOnDark ? lightness : 1 - lightness) * pixels[index + 3] / 255;
+    const character = ramp[Math.round((1 - density) * (ramp.length - 1))];
+    const current = character !== " " ? palette?.(pixels[index], pixels[index + 1], pixels[index + 2]) : undefined;
+    if (current !== previous) {
+      append();
+      run = "";
+      previous = current;
+    }
+    run += character;
+  }
+  append();
+}
+
+function convert(image) {
+  if (!image.naturalWidth) return;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return;
+  const pre = document.createElement("pre");
+  pre.className = "file-ascii";
+  if (image.alt) {
+    pre.setAttribute("role", "img");
+    pre.setAttribute("aria-label", image.alt);
+  } else {
+    pre.setAttribute("aria-hidden", "true");
+  }
+  const color = image.dataset.noaxAscii === "color";
+  let columns = 0;
+  let rows = 0;
+  let sample;
+  let lastInk;
+  let lastPaper;
+  const draw = (width, style) => {
+    context.font = `${style.fontSize} ${style.fontFamily}`;
+    const cellWidth = context.measureText("0").width;
+    const ratio = image.naturalWidth / image.naturalHeight * parseFloat(style.lineHeight) / cellWidth;
+    const fit = Math.floor(width / cellWidth);
+    if (!(fit >= 1)) return false;
+    const nextColumns = Math.min(fit, maxColumns, Math.max(1, Math.round(maxRows * ratio)));
+    const nextRows = Math.max(1, Math.min(maxRows, Math.round(nextColumns / ratio)));
+    const ink = style.color;
+    const paper = getComputedStyle(document.body).backgroundColor;
+    if (nextColumns === columns && nextRows === rows) {
+      if (ink === lastInk && paper === lastPaper) return true;
+    } else {
+      columns = canvas.width = nextColumns;
+      rows = canvas.height = nextRows;
+      try {
+        context.drawImage(image, 0, 0, columns, rows);
+        const pixels = context.getImageData(0, 0, columns, rows).data;
+        sample = { pixels, ...sampleTones(pixels) };
+      } catch {
+        return false;
+      }
+    }
+    lastInk = ink;
+    lastPaper = paper;
+
+    const inkRgb = rgb(ink);
+    const paperTone = luminance(rgb(paper));
+    const lightOnDark = luminance(inkRgb) > paperTone;
+    const palette = color ? paletteFor(inkRgb, paperTone) : undefined;
+    const output = document.createDocumentFragment();
+    for (let row = 0; row < rows; row++) {
+      if (row) output.append("\n");
+      rowText(output, sample, row * columns, columns, lightOnDark, palette);
+    }
+    pre.replaceChildren(output);
+    return true;
+  };
+
+  image.replaceWith(pre);
+  let width = pre.getBoundingClientRect().width;
+  if (!draw(width, getComputedStyle(pre))) {
+    pre.replaceWith(image);
+    return;
+  }
+  let resize;
+  const redraw = () => {
+    if (width && !draw(width, getComputedStyle(pre))) {
+      resize?.disconnect();
+      theme.removeEventListener("change", redraw);
+      pre.replaceWith(image);
+    }
+  };
+  theme.addEventListener("change", redraw);
+  if ("ResizeObserver" in window) {
+    resize = new ResizeObserver(([{ contentRect }]) => {
+      width = contentRect.width;
+      redraw();
+    });
+    resize.observe(pre);
+  }
+}
+
+if ("IntersectionObserver" in window) {
+  const observer = new IntersectionObserver((entries) => {
+    for (const { target: image, isIntersecting } of entries) {
+      if (!isIntersecting) continue;
+      observer.unobserve(image);
+      if (image.complete) convert(image);
+      else image.addEventListener("load", () => convert(image), { once: true });
+    }
+  });
+  for (const image of document.querySelectorAll("img[data-noax-ascii]")) observer.observe(image);
+}

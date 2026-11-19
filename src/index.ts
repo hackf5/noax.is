@@ -3,7 +3,8 @@ import faviconIco from "./assets/favicon.ico";
 import faviconSvg from "./assets/favicon.svg";
 import { llmsTxt, pagesSitemap, postsSitemap, robotsTxt, sitemapIndex } from "./discovery";
 import { atomFeed } from "./feed";
-import { errorPage, postPage, siteFrom, stylesheet, stylesheetVersion, timeline } from "./html";
+import { filesFrom, uploadPath } from "./files/store";
+import { asciiScript, asciiScriptVersion, errorPage, postPage, siteFrom, stylesheet, stylesheetVersion, timeline } from "./html";
 import { markdownError, markdownPost, markdownTimeline, preferredText, type TextType } from "./markdown";
 import { handleMcp } from "./mcp";
 import { postPath, UUID_PATTERN } from "./post-metadata";
@@ -35,15 +36,16 @@ function respond(body: BodyInit | null, status = 200, type = "text/html; charset
   return new Response(body, { status, headers: { ...securityHeaders, "Cache-Control": cache, "Content-Type": type } });
 }
 
-// Every page exists as HTML and Markdown, so both say they depend on Accept. Our HTML has no scripts,
-// but Cloudflare injects bot detection into it and copies the nonce from this header onto its scripts.
+// Every page exists as HTML and Markdown, so both say they depend on Accept. Cloudflare injects bot
+// detection into HTML and copies the nonce from this header onto its scripts.
 // It only reads the header, so this can't move to a <meta> tag, and pages must stay no-store so a
 // nonce is never reused. Cache-Control: no-transform would stop the injection. connect-src is there
 // because its script posts its result to /cdn-cgi/challenge-platform/.
-function htmlPage(body: string, status = 200, markdownPath?: string): Response {
+function htmlPage(body: string, status = 200, markdownPath?: string, mediaOrigin?: string): Response {
   const response = respond(body, status);
   const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
-  response.headers.set("Content-Security-Policy", `${CONTENT_SECURITY_POLICY}; script-src 'self' 'nonce-${nonce}'; connect-src 'self'`);
+  const policy = mediaOrigin ? CONTENT_SECURITY_POLICY.replace("img-src 'self'", `img-src 'self' ${mediaOrigin}`) : CONTENT_SECURITY_POLICY;
+  response.headers.set("Content-Security-Policy", `${policy}; script-src 'self' 'nonce-${nonce}'; connect-src 'self'`);
   response.headers.set("Vary", "Accept");
   if (markdownPath) response.headers.set("Link", `<${markdownPath}>; rel="alternate"; type="text/markdown"`);
   return response;
@@ -61,10 +63,31 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname === env.MCP_HOST) {
-      if (url.pathname !== "/mcp") return respond("Not found", 404, "text/plain; charset=utf-8");
-      if (!(await authenticate(request, env))) return respond("Forbidden", 403, "text/plain; charset=utf-8");
+      const files = filesFrom(env);
+      const upload = files ? uploadPath.exec(url.pathname) : null;
+      if (url.pathname !== "/mcp" && !upload) return respond("Not found", 404, TYPE_TEXT);
+      if (!(await authenticate(request, env))) return respond("Forbidden", 403, TYPE_TEXT);
       if (request.headers.has("Origin") && request.headers.get("Origin") !== `https://${env.MCP_HOST}`) {
-        return respond("Forbidden origin", 403, "text/plain; charset=utf-8");
+        return respond("Forbidden origin", 403, TYPE_TEXT);
+      }
+      if (upload) {
+        if (request.method !== "PUT") {
+          return new Response("Method not allowed", { status: 405, headers: { ...securityHeaders, "Cache-Control": "no-store", Allow: "PUT", "Content-Type": TYPE_TEXT } });
+        }
+        const headers = { ...securityHeaders, "Cache-Control": "no-store" };
+        const work = files!.upload(upload[1]!, upload[2]!, request).then(
+          (file) => Response.json({ file }, { headers }),
+          (error: unknown) => {
+            if (error instanceof PostError) {
+              const status = { validation: 400, not_found: 404, conflict: 409 }[error.code];
+              return Response.json({ error: { code: error.code, message: error.message } }, { status, headers });
+            }
+            console.error("File upload failed", error instanceof Error ? error.name : "unknown");
+            return Response.json({ error: { code: "internal", message: "The upload did not complete. Check begin_file_upload before retrying." } }, { status: 500, headers });
+          },
+        );
+        ctx.waitUntil(work);
+        return work;
       }
       const response = await handleMcp(request, env, ctx);
       const headers = new Headers(response.headers);
@@ -81,13 +104,18 @@ export default {
       return respond(request.method === "HEAD" ? null : svg ? faviconSvg : faviconIco, 200,
         svg ? "image/svg+xml" : "image/vnd.microsoft.icon", CACHE_ASSET);
     }
-    const site = siteFrom(env);
+    const files = filesFrom(env);
+    if (files && url.pathname === "/ascii.js" && url.searchParams.get("v") === asciiScriptVersion) {
+      // Keep this browser-cacheable without a Workers Cache hit across the two hostnames.
+      return respond(request.method === "HEAD" ? null : asciiScript, 200, "text/javascript; charset=utf-8", "private, max-age=31536000, immutable");
+    }
+    const site = siteFrom(env, files?.origin);
     const text = url.pathname.endsWith(".md") ? "text/markdown" : preferredText(request.headers.get("Accept"));
     const failure = (message: string, status: number) =>
       text ? markdownPage(markdownError(site, message), text, status) : htmlPage(errorPage(site, message), status);
     let response: Response;
     try {
-      const posts = new Posts(env.DB);
+      const posts = new Posts(env.DB, undefined, files);
       if (url.pathname === "/style.css") {
         // During a deploy a new page's request can reach an old isolate, which mustn't pin old CSS to
         // the new URL, so only the version this isolate actually has is kept for good.
@@ -109,7 +137,7 @@ export default {
         // Markdown pages read the source, so they never render, even with a stale cache.
         response = text
           ? markdownPage(markdownTimeline(site, await posts.list(before)), text, 200, `${site.origin}/${query}`)
-          : htmlPage(timeline(site, await posts.listPublished(before), !before, `/index.md${query}`), 200, `/index.md${query}`);
+          : htmlPage(timeline(site, await posts.listPublished(before), !before, `/index.md${query}`), 200, `/index.md${query}`, files?.origin);
       } else {
         const sitemap = SITEMAP_POSTS_PATH.exec(url.pathname);
         const post = POST_PATH.exec(url.pathname);
@@ -125,7 +153,7 @@ export default {
             ? new Response(null, { status: 301, headers: { ...securityHeaders, "Cache-Control": "no-store", Location: path } })
             : text
               ? markdownPage(markdownPost(site, found), text, 200, `${site.origin}${canonical}`)
-              : htmlPage(postPage(site, found), 200, `${canonical}.md`);
+              : htmlPage(postPage(site, found), 200, `${canonical}.md`, files?.origin);
         } else {
           response = failure("Not found", 404);
         }

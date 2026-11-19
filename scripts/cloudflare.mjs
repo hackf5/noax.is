@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { parseEnv } from "node:util";
+import { inspectFileStorage, provisionFileStorage } from "./files-provisioning.mjs";
 import {
   assertHostsAvailable, assertInZone, assertSinglePolicy, discoverTeamDomain, findZone, listAll, normaliseTeamDomain,
 } from "./provisioning.mjs";
@@ -23,7 +24,9 @@ async function request(method, path, data) {
   try { body = JSON.parse(raw); } catch { throw new Error(`${method} ${path}: HTTP ${response.status}, unexpected response`); }
   if (!response.ok || !body.success) {
     const errors = (body.errors ?? []).map((error) => `${error.code}: ${error.message}`).join("; ").replaceAll(token, "[redacted]");
-    throw new Error(`${method} ${path}: HTTP ${response.status}: ${errors}`);
+    throw Object.assign(new Error(`${method} ${path}: HTTP ${response.status}: ${errors}`), {
+      status: response.status, codes: (body.errors ?? []).map(({ code }) => code),
+    });
   }
   return body;
 }
@@ -87,16 +90,22 @@ const databases = await list(`${accountPath}/d1/database`);
 const applications = await list(`${accountPath}/access/apps`);
 const domains = await api("GET", `${accountPath}/workers/domains`);
 const routes = await api("GET", `/zones/${zone.id}/workers/routes`);
+const fileStorage = site.files && await inspectFileStorage(api, accountPath, zone, site.files, domains, routes);
 
 if (command === "inspect") {
-  console.log(JSON.stringify({
+  const report = JSON.stringify({
     zone: zone.name,
     databases: databases.map(({ uuid, name }) => ({ id: uuid, name })),
     access_applications: applications.map(({ id, name, domain }) => ({ id, name, domain })),
     service_tokens: tokens.map(({ id, name }) => ({ id, name })),
     worker_domains: domains.map(({ hostname, service }) => ({ hostname, service })),
     worker_routes: routes.map(({ pattern, script }) => ({ pattern, script })),
-  }, null, 2));
+    ...(fileStorage ? { files: {
+      ...site.files, bucket_exists: Boolean(fileStorage.bucket), domain: fileStorage.domain?.status ?? null,
+      cache_rule_exists: Boolean(fileStorage.existingRule),
+    } } : {}),
+  }, null, 2);
+  await new Promise((resolve) => process.stdout.write(`${report}\n`, resolve));
   process.exit(0);
 }
 
@@ -156,14 +165,18 @@ if (!database) {
 }
 if (!database.uuid || !application.aud) throw new Error("Provisioning returned incomplete resource identifiers.");
 
+const files = fileStorage && await provisionFileStorage(api, zone, site.files, fileStorage);
+
 await writeRecord({
   worker: names.worker,
+  zone_id: zone.id,
   database_id: database.uuid,
   access_app_id: application.id,
   access_aud: application.aud,
   access_team_domain: issuer,
   access_service_token_id: serviceToken.id,
   access_service_token_expires_at: serviceToken.expires_at,
+  ...(files ? { files } : {}),
 });
 await generate();
 console.log("Recorded the deployment in .local/ and generated the MCP client configs. Apply migrations before deploying.");

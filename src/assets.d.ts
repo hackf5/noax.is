@@ -7,3 +7,8 @@ declare module "*.ico" {
   const bytes: ArrayBuffer;
   export default bytes;
 }
+
+declare module "*.js.txt" {
+  const source: string;
+  export default source;
+}

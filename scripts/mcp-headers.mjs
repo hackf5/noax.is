@@ -32,6 +32,14 @@ export async function getMcpHeaders() {
   return headers;
 }
 
+export function sameOriginFetch(origin) {
+  return (input, init) => {
+    const target = new URL(input instanceof Request ? input.url : input);
+    if (target.origin !== origin || target.username || target.password) throw new Error("Refusing to send Noax credentials to another origin.");
+    return fetch(input, { ...init, redirect: "error" });
+  };
+}
+
 // This entry point is for MCP clients; stdout must contain only their JSON headers.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {

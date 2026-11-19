@@ -5,7 +5,8 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import worker from "../src/index";
-import { stylesheet, stylesheetVersion } from "../src/html";
+import { IMMUTABLE_FILE } from "../src/files/store";
+import { asciiScriptVersion, stylesheet, stylesheetVersion } from "../src/html";
 import { Posts, SITEMAP_SIZE } from "../src/posts";
 import { backfillSlugs, type SlugQuery } from "../src/slug-backfill";
 import { RENDER_VERSION, renderMarkdown } from "../src/render";
@@ -19,6 +20,7 @@ const contexts: ExecutionContext[] = [];
 let privateKey: CryptoKey;
 let otherPrivateKey: CryptoKey;
 let token: string;
+const analyticsFetch = vi.fn<typeof fetch>();
 
 async function signedToken(options: { audience?: string; issuer?: string; expired?: boolean; wrongKey?: boolean } = {}) {
   return new SignJWT({})
@@ -31,20 +33,20 @@ async function signedToken(options: { audience?: string; issuer?: string; expire
     .sign(options.wrongKey ? otherPrivateKey : privateKey);
 }
 
-async function request(url: string | URL, init?: RequestInit): Promise<Response> {
+async function request(url: string | URL, init?: RequestInit, target = env): Promise<Response> {
   const ctx = createExecutionContext();
   contexts.push(ctx);
-  return worker.fetch(new Request(url, init), env, ctx);
+  return worker.fetch(new Request(url, init), target, ctx);
 }
 
 const slugQuery: SlugQuery = async <Row>(sql: string, params: (string | number)[]) =>
   (await env.DB.prepare(sql).bind(...params).all<Row>()).results;
 
-async function withClient<T>(callback: (client: Client) => Promise<T>): Promise<T> {
+async function withClient<T>(callback: (client: Client) => Promise<T>, target = env): Promise<T> {
   const client = new Client({ name: "noax-test", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(mcpEndpoint), {
     requestInit: { headers: { "Cf-Access-Jwt-Assertion": token } },
-    fetch: (url, init) => request(String(url), init),
+    fetch: (url, init) => request(String(url), init, target),
   });
   try {
     await client.connect(transport);
@@ -71,17 +73,239 @@ beforeAll(async () => {
   privateKey = pair.privateKey;
   otherPrivateKey = (await generateKeyPair("RS256")).privateKey;
   const publicKey = { ...await exportJWK(pair.publicKey), kid: "test-key", alg: "RS256", use: "sig" };
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url === `${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`) return Response.json({ keys: [publicKey] });
+    if (url === "https://api.cloudflare.com/client/v4/graphql") return analyticsFetch(input, init);
     throw new Error(`Unexpected outbound request: ${url}`);
   });
   token = await signedToken();
 });
 
-beforeEach(async () => { await env.DB.exec("DELETE FROM posts"); });
+beforeEach(async () => {
+  analyticsFetch.mockReset();
+  await env.DB.exec("DELETE FROM posts");
+});
 afterEach(async () => { await Promise.all(contexts.splice(0).map(waitOnExecutionContext)); });
 afterAll(() => { vi.restoreAllMocks(); });
+
+describe("optional traffic reports", () => {
+  const analyticsEnv = { ...env, ANALYTICS_ZONE_ID: "example-zone", NOAX_ANALYTICS_TOKEN: "analytics-fixture-only" };
+  const emptyGroups = { daily: [], pages: [], devices: [], browsers: [], operating_systems: [], countries: [] };
+  const graph = (groups = emptyGroups) => Response.json({ data: { viewer: { zones: [groups] } }, errors: null });
+
+  it("only exposes the tool on the authenticated, configured MCP", async () => {
+    await withClient(async (client) => expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain("get_traffic_report"));
+    const forbidden = await request(mcpEndpoint, { method: "POST" }, analyticsEnv);
+    expect(forbidden.status).toBe(403);
+    expect((await request(publicOrigin + "/mcp", { method: "POST" }, analyticsEnv)).status).toBe(405);
+    await withClient(async (client) => {
+      expect((await client.listTools()).tools.find(tool => tool.name === "get_traffic_report")?.annotations?.readOnlyHint).toBe(true);
+    }, analyticsEnv);
+    expect(analyticsFetch).not.toHaveBeenCalled();
+  });
+
+  it("scopes the fixed query and fills missing complete UTC days in the report", async () => {
+    analyticsFetch.mockImplementation(async (_input, init) => {
+      const { query, variables } = JSON.parse(String(init?.body));
+      expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${analyticsEnv.NOAX_ANALYTICS_TOKEN}`);
+      expect(init?.redirect).toBe("manual");
+      expect(variables).toMatchObject({ zone: analyticsEnv.ANALYTICS_ZONE_ID, host: analyticsEnv.PUBLIC_HOST });
+      expect(query).toContain("clientRequestHTTPHost: $host");
+      expect(query).toContain('requestSource: "eyeball"');
+      expect(query).toContain('clientRequestHTTPMethodName: "GET"');
+      expect(query).toContain('edgeResponseContentTypeName: "html"');
+      expect(query).toContain("edgeResponseStatus: 200");
+      expect(variables.end).toMatch(/T00:00:00\.000Z$/);
+      expect(Date.parse(variables.end) - Date.parse(variables.start)).toBe(2 * 86_400_000);
+      return Response.json({ data: { viewer: { zones: [{ ...emptyGroups,
+        daily: [{ count: 12, dimensions: { value: variables.start.slice(0, 10) } }],
+        pages: [{ count: 9, dimensions: { value: "/posts/example" } }],
+      }] } } });
+    });
+    await withClient(async (client) => {
+      const report = await call(client, "get_traffic_report", { days: 2 });
+      expect(report.isError).not.toBe(true);
+      expect(report.structuredContent).toMatchObject({ hostname: analyticsEnv.PUBLIC_HOST, estimated_total: 12,
+        daily: [{ estimated_requests: 12 }, { estimated_requests: 0 }], pages: [{ label: "/posts/example", estimated_requests: 9 }] });
+    }, analyticsEnv);
+    expect(analyticsFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults to seven days, rejects invalid ranges, and distinguishes an empty report from a provider error", async () => {
+    await withClient(async (client) => {
+      for (const days of [0, 31, 2.5]) expect((await call(client, "get_traffic_report", { days })).isError).toBe(true);
+      expect(analyticsFetch).not.toHaveBeenCalled();
+      analyticsFetch.mockResolvedValueOnce(graph());
+      const empty = await call(client, "get_traffic_report", {});
+      expect(empty.structuredContent?.daily).toHaveLength(7);
+      expect(empty.structuredContent).toMatchObject({ estimated_total: 0, pages: [] });
+      analyticsFetch.mockResolvedValueOnce(Response.json({ errors: [{ message: analyticsEnv.NOAX_ANALYTICS_TOKEN }] }));
+      const failed = await call(client, "get_traffic_report", { days: 1 });
+      expect(failed.isError).toBe(true);
+      expect(failed.structuredContent).toMatchObject({ error: { code: "analytics_unavailable" } });
+      expect(JSON.stringify(failed)).not.toContain(analyticsEnv.NOAX_ANALYTICS_TOKEN);
+      analyticsFetch.mockResolvedValueOnce(Response.redirect("https://example.com", 307));
+      const redirected = await call(client, "get_traffic_report", { days: 1 });
+      expect(redirected.structuredContent).toMatchObject({ error: { code: "analytics_unavailable", message: "Cloudflare Analytics returned HTTP 307." } });
+    }, analyticsEnv);
+  });
+});
+
+describe("optional files extension", () => {
+  const fileEnv = { ...env, FILES: env.FILES!, MEDIA_HOST: "media.blog.test" };
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=", "base64");
+  const id = createHash("sha256").update(png).digest("hex");
+  const url = `https://${fileEnv.MEDIA_HOST}/${id}`;
+  const manifest = { id, filename: "example.png", content_type: "image/png", byte_size: png.length };
+  const block = (mode = "image", alt = "An example image") => `{% file ${id} | ${mode} | alt ${JSON.stringify(alt)} %}`;
+  const reserve = async (client: Client, fileId = id) => {
+    const result = await call(client, "begin_file_upload", { ...manifest, id: fileId });
+    expect(result.isError, JSON.stringify(result.structuredContent)).not.toBe(true);
+    return result.structuredContent as { file: { id: string; state: string; version: string; url: string | null }; upload_url: string | null };
+  };
+  const put = (uploadUrl: string, bytes = png) => request(uploadUrl, {
+    method: "PUT", body: bytes,
+    headers: { "Cf-Access-Jwt-Assertion": token, "Content-Length": String(bytes.length), "Content-Type": "image/png" },
+  }, fileEnv);
+  const publish = async (client: Client, markdown: string) => postFrom(await call(client, "create_post", { markdown }));
+
+  beforeEach(async () => {
+    await env.DB.exec("DELETE FROM files");
+    const objects = (await fileEnv.FILES.list()).objects.map(({ key }) => key);
+    if (objects.length) await fileEnv.FILES.delete(objects);
+  });
+
+  it("discovers file tools only when configured and guards the upload hostname", async () => {
+    await withClient(async (client) => {
+      const { tools } = await client.listTools();
+      expect(tools.map(({ name }) => name)).toEqual(expect.arrayContaining(["begin_file_upload", "get_file", "list_files", "delete_file"]));
+      const reservation = await reserve(client);
+      expect(reservation.file.state).toBe("pending");
+      const target = reservation.upload_url!;
+      expect((await request(target, { method: "PUT" }, fileEnv)).status).toBe(403);
+      expect((await request(target, { method: "PUT", headers: { "Cf-Access-Jwt-Assertion": token, Origin: "https://other.test" } }, fileEnv)).status).toBe(403);
+      expect((await request(target)).status).toBe(404);
+      expect((await request(target.replace(mcpOrigin, publicOrigin), { method: "PUT" }, fileEnv)).status).toBe(405);
+      const head = await request(target, { method: "HEAD", headers: { "Cf-Access-Jwt-Assertion": token } }, fileEnv);
+      expect(head.status).toBe(405);
+      expect(head.headers.get("Cache-Control")).toBe("no-store");
+    }, fileEnv);
+  });
+
+  it("streams verified bytes, reuses the checksum and renders the same direct URL in all modes", async () => {
+    await withClient(async (client) => {
+      const reserved = await reserve(client);
+      const upload = await put(reserved.upload_url!);
+      expect(upload.status, await upload.clone().text()).toBe(200);
+      expect(upload.headers.get("Cache-Control")).toBe("no-store");
+      expect((await upload.json<{ file: unknown }>()).file).toMatchObject({ id, state: "ready", url, width: 1, height: 1 });
+      expect(await reserve(client)).toMatchObject({ file: { id, state: "ready" }, upload_url: null });
+      const object = (await fileEnv.FILES.get(id))!;
+      expect(Buffer.from(await object.arrayBuffer())).toEqual(png);
+      expect(object.httpMetadata).toMatchObject({ cacheControl: IMMUTABLE_FILE, contentType: "image/png" });
+
+      const source = `# Image test\n\n${block()}\n\n${block("ascii bw", 'A "quoted" <label>')}\n\n${block("ascii color", "")}`;
+      const post = await publish(client, source);
+      const page = await request(post.url, {}, fileEnv);
+      const html = await page.text();
+      expect(page.headers.get("Content-Security-Policy")).toContain(`img-src 'self' https://${fileEnv.MEDIA_HOST}`);
+      expect(html.match(new RegExp(`src="${url}"`, "g"))).toHaveLength(3);
+      expect(html).toContain('data-noax-ascii="bw"');
+      expect(html).toContain('data-noax-ascii="color"');
+      expect(html).toContain('alt="A &quot;quoted&quot; &lt;label&gt;"');
+      expect(html).toContain('width="1" height="1" loading="lazy" decoding="async" crossorigin="anonymous"');
+      expect(html).toContain(`<script type="module" src="/ascii.js?v=${asciiScriptVersion}"></script>`);
+      expect(await (await request(post.url, { headers: { Accept: "text/markdown" } }, fileEnv)).text()).toContain(source);
+      expect(await (await request(`${publicOrigin}/feed.xml`, {}, fileEnv)).text()).toContain(url);
+      expect((await env.DB.prepare("SELECT * FROM post_files").all()).results).toEqual([{ post_id: post.id, file_id: id }]);
+      const scriptPath = `/ascii.js?v=${asciiScriptVersion}`;
+      const script = await request(`${publicOrigin}${scriptPath}`, {}, fileEnv);
+      expect(script.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
+      expect(script.headers.get("Content-Type")).toBe("text/javascript; charset=utf-8");
+      expect((await request(`${mcpOrigin}${scriptPath}`, {}, fileEnv)).status).toBe(404);
+      expect((await request(`${publicOrigin}${scriptPath}`)).status).toBe(404);
+    }, fileEnv);
+  });
+
+  it("validates real blocks without interpreting legacy examples or fenced snippets", async () => {
+    const legacy = await new Posts(env.DB).create(block());
+    await env.DB.prepare("UPDATE posts SET render_version = 2 WHERE id = ?").bind(legacy.id).run();
+    const oldPage = await (await request(`${publicOrigin}/posts/${legacy.slug}`, {}, fileEnv)).text();
+    expect(oldPage).toContain(id);
+    expect(oldPage).not.toContain(`<img class="file-image"`);
+    await withClient(async (client) => {
+      await reserve(client);
+      for (const markdown of [block(), block("ascii sepia"), "{% file malformed %}"]) {
+        expect((await call(client, "create_post", { markdown })).structuredContent).toMatchObject({ error: { code: "validation" } });
+      }
+      const source = `\`\`\`\n${block()}\n\`\`\`\n\n\\${block()}\n\n    ${block()}\n\n> ${block()}`;
+      const post = await publish(client, source);
+      expect((await (await request(post.url, {}, fileEnv)).text())).not.toContain(`<img class="file-image"`);
+    }, fileEnv);
+  });
+
+  it("guards references, skips stale post edits and permits reuse after explicit deletion", async () => {
+    await withClient(async (client) => {
+      const reservation = await reserve(client);
+      expect((await put(reservation.upload_url!)).status).toBe(200);
+      const first = await publish(client, `# First\n\n${block()}`);
+      const second = await publish(client, `# Second\n\n${block()}`);
+      const deletion = { id, expected_version: reservation.file.version };
+      expect((await call(client, "list_files", { unused_only: true })).structuredContent).toMatchObject({ files: [] });
+      expect((await call(client, "delete_file", deletion)).structuredContent).toMatchObject({ error: { code: "conflict" } });
+      postFrom(await call(client, "update_post", { id: first.id, expected_version: first.version, markdown: "Text only" }));
+      expect((await call(client, "update_post", { id: first.id, expected_version: first.version, markdown: block() })).structuredContent).toMatchObject({ error: { code: "conflict" } });
+      expect((await env.DB.prepare("SELECT post_id FROM post_files").all()).results).toEqual([{ post_id: second.id }]);
+      await call(client, "delete_post", { id: second.id, expected_version: second.version });
+      expect((await call(client, "list_files", { unused_only: true })).structuredContent).toMatchObject({ files: [{ id }] });
+      expect((await call(client, "delete_file", deletion)).structuredContent).toEqual({ id, deleted: true });
+      expect(await fileEnv.FILES.head(id)).toBeNull();
+      const next = await reserve(client);
+      expect(next.file.version).not.toBe(reservation.file.version);
+      expect((await put(reservation.upload_url!)).status).toBe(409);
+      expect((await call(client, "delete_file", deletion)).structuredContent).toMatchObject({ error: { code: "conflict" } });
+      expect((await put(next.upload_url!)).status).toBe(200);
+    }, fileEnv);
+  });
+
+  it("rejects incorrect checksums and recovers an acknowledged R2 write if D1 finalization was interrupted", async () => {
+    await withClient(async (client) => {
+      const badId = "a".repeat(64);
+      const bad = await reserve(client, badId);
+      const rejected = await put(bad.upload_url!);
+      expect(rejected.status, await rejected.clone().text()).toBe(400);
+      expect(await fileEnv.FILES.head(badId)).toBeNull();
+      expect((await reserve(client, badId)).file.state).toBe("pending");
+
+      const reserved = await reserve(client);
+      expect((await put(reserved.upload_url!)).status).toBe(200);
+      await env.DB.prepare("UPDATE files SET state = 'uploading', ready_at = NULL WHERE id = ?").bind(id).run();
+      expect(await reserve(client)).toMatchObject({ file: { id, state: "ready", url }, upload_url: null });
+      await env.DB.prepare("UPDATE files SET state = 'deleting' WHERE id = ?").bind(id).run();
+      await fileEnv.FILES.delete(id);
+      expect((await call(client, "delete_file", { id, expected_version: reserved.file.version })).structuredContent).toEqual({ id, deleted: true });
+    }, fileEnv);
+  });
+
+  it("allows a truncated transfer to retry and serializes competing uploads", async () => {
+    await withClient(async (client) => {
+      const reserved = await reserve(client);
+      const partial = await request(reserved.upload_url!, {
+        method: "PUT", body: png.subarray(0, png.length - 4),
+        headers: { "Cf-Access-Jwt-Assertion": token, "Content-Length": String(png.length), "Content-Type": "image/png" },
+      }, fileEnv);
+      expect(partial.status, await partial.clone().text()).toBe(400);
+      expect(await fileEnv.FILES.head(id)).toBeNull();
+      expect((await reserve(client)).file.state).toBe("pending");
+      const results = await Promise.all([put(reserved.upload_url!), put(reserved.upload_url!)]);
+      expect(results.map(({ status }) => status)).toContain(200);
+      expect(results.every(({ status }) => status === 200 || status === 409)).toBe(true);
+      expect(await reserve(client)).toMatchObject({ file: { id, state: "ready" }, upload_url: null });
+      expect((await fileEnv.FILES.list()).objects).toHaveLength(1);
+    }, fileEnv);
+  });
+});
 
 describe("MCP publishing", () => {
   it("discovers exactly five annotated tools through the real MCP protocol", async () => {
@@ -594,6 +818,7 @@ describe("renderer output", () => {
     },
   };
   expectedOutput[2] = { ...expectedOutput[1]!, html: `<!--post-title-->${expectedOutput[1]!.html}` };
+  expectedOutput[3] = expectedOutput[2]!;
 
   it("matches the recorded output for the current RENDER_VERSION", () => {
     expect(renderMarkdown(sample), "Rendered output changed: bump RENDER_VERSION in src/render.ts and add a new entry here.").toEqual(expectedOutput[RENDER_VERSION]);

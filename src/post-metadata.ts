@@ -4,8 +4,8 @@ import type { Post } from "./types";
 export const markdown = new MarkdownIt("commonmark", { html: false }).disable("image");
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-export function parsePost(source: string) {
-  const tokens = markdown.parse(source, {});
+export function parsePost(source: string, fileBlocks = false) {
+  const tokens = markdown.parse(source, { fileBlocks });
   const titleIndex = tokens.findIndex((token) => token.type === "heading_open" && token.tag === "h1" && token.level === 0);
   const title = (titleIndex < 0 ? "" : tokens[titleIndex + 1]?.children?.map((token) => {
     if (token.type === "text" || token.type === "code_inline") return token.content;

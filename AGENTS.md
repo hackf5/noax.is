@@ -14,7 +14,9 @@ This repository is generic. Everything specific to one blog lives outside Git: i
 - `delete_post` permanently removes the post. Call it only when the user requests deletion.
 - A version conflict requires reading and reviewing the latest post. Never blindly retry.
 - After a creation timeout, inspect `list_posts` before retrying to avoid duplicate posts.
-- Use the five MCP tools for editorial work. Keep Cloudflare provisioning credentials separate from the Access service token.
+- Use the MCP tools for editorial work. Keep Cloudflare provisioning credentials separate from the Access service token.
+- When files are enabled, use `npm run files:upload -- --path <file>` for a local file or a pasted image's harness-provided path. Use `--url <https-url>` for a direct link. Images become public on upload, so only upload files the author wants public. Use the returned checksum in a standalone shortcode and include alt text. See [image examples](README.md#add-images-to-a-post).
+- Read `get_file` before deleting a file and pass its `version` as `expected_version`. Delete only when requested. Use `list_files` with `unused_only` to find candidates.
 
 ## Setting up a new instance
 
@@ -23,6 +25,8 @@ Only the author can do these steps, so ask for them rather than attempting them:
 1. Add the domain to Cloudflare, so its zone is active.
 2. Create a Zero Trust organisation in the dashboard. Cloudflare asks for payment details even on the Free plan.
 3. Create an API token with the permissions in the README, and put it in `.local/cloudflare.env`, using `.env.example` as the template.
+4. For the optional files extension, activate R2 and add **Account → Workers R2 Storage → Edit**, **Zone → DNS → Read**, and **Zone → Cache Settings → Edit** to that token.
+5. To enable optional analytics, create a separate token with **Zone → Analytics → Read**, scoped to the blog's specific zone. Save it as `NOAX_ANALYTICS_TOKEN` in `.local/analytics.secrets.json`. Prepare the ignored file for the author if needed. Keep this token separate from the provisioning and publishing credentials.
 
 Then you can do the rest:
 
@@ -32,11 +36,15 @@ Then you can do the rest:
 4. If `mcp:check` says `fetch failed` straight after a first deploy, the new hostname isn't reachable yet. Its certificate usually takes a couple of minutes, but this machine's resolver can remember the missing DNS record for up to 30 minutes. Wait and run `npm run mcp:check` again, and don't rerun provisioning.
 5. Tell the author to start a fresh harness session, as the MCP configuration has just been generated. Offer to help write `EDITORIAL.md`, starting from `EDITORIAL.example.md`.
 
+The `files` setting in `.local/site.json` controls the extension. Leave it null for a text-only blog. With the author's agreement, enable it during setup or add `bucket_name` and `media_host` and rerun setup later. Setup checks for hostname conflicts and provisions a Cache Rule on the media host only. See [setup choices](README.md#choose-file-support).
+
+To enable analytics during setup or later, set `analytics` to `true` in `.local/site.json` and run `npm run setup` with the author's agreement. The deploy command verifies and installs the dedicated token automatically. For rotation, have the author replace the local token and run `npm run deploy` followed by `npm run mcp:check`. Use `get_traffic_report` when the author asks for website traffic. See [optional analytics setup](README.md#enable-optional-analytics).
+
 ## Harness connection
 
 - `.mcp.json` and `.codex/config.toml` are generated and ignored; never hand-edit or commit them. Start the harness from the repository root.
 - Both clients run `scripts/mcp-headers.mjs` to read the Access service token from the ignored `.local/mcp.env`; manually exporting credentials is unnecessary.
-- Use `npm run mcp:check` for a read-only connection and tool-discovery check. It does not publish or modify posts.
+- Use `npm run mcp:check` for a read-only connection and tool-discovery check. With analytics enabled, it also runs an aggregate smoke report.
 - The headers helper's stdout contains credentials for the MCP client. Never run it directly in a logged shell or print its output. Use the read-only connection check for diagnostics.
 - A fresh harness session is required after changing MCP configuration. If tools are unavailable, resolve the connection before promising that an article can be published.
 
@@ -55,3 +63,4 @@ Then you can do the rest:
 - Stored HTML, titles and summaries are a cache of the Markdown. Bump `RENDER_VERSION` in `src/render.ts` whenever rendered output changes; posts then rebuild as they're read.
 - `.local/`, `.dev.vars`, and environment files contain credentials and must stay ignored. Never print token values or commit them.
 - Provisioning must not overwrite another Worker's domain bindings or broaden existing Access policies.
+- Uploads and file management use the existing Access JWT checks. Public images come directly from the R2 custom domain. Keep the media Cache Rule scoped to the configured host, preserve other rules, and mark uploaded object bytes immutable under their SHA-256 keys.

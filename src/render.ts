@@ -1,13 +1,17 @@
 import { markdown, parsePost } from "./post-metadata";
+import { registerFileShortcodes } from "./files/shortcodes";
+import type { FileImage } from "./files/store";
 import type { Rendered } from "./types";
 
 // Stored posts are a cache of this output. Bump this whenever renderMarkdown's output changes,
 // and posts rebuild as they're read.
-export const RENDER_VERSION = 2;
+export const RENDER_VERSION = 3;
 
 const SUMMARY_LENGTH = 160;
 
 type Token = ReturnType<typeof markdown.parse>[number];
+
+registerFileShortcodes(markdown);
 
 const defaultFence = markdown.renderer.rules.fence!;
 markdown.renderer.rules.fence = (tokens, index, options, env, renderer) =>
@@ -40,11 +44,18 @@ function truncate(text: string, limit: number): string {
 }
 
 export function renderMarkdown(source: string): Rendered {
-  const { tokens, titleIndex, title } = parsePost(source);
+  return renderPostTokens(parsePost(source));
+}
+
+export function renderPostTokens(
+  { tokens, titleIndex, title }: ReturnType<typeof parsePost>,
+  mediaOrigin?: string,
+  images?: Map<string, FileImage>,
+): Rendered {
   const blocks = tokens.filter((token) => token.type === "inline").map(plainText).filter((text) => text.trim());
   const body = tokens[0]?.type === "heading_open" ? blocks.slice(1) : blocks;
   return {
-    html: markdown.renderer.render(tokens, markdown.options, { titleIndex }),
+    html: markdown.renderer.render(tokens, markdown.options, { titleIndex, mediaOrigin, images }),
     title,
     summary: truncate(body.join(" "), SUMMARY_LENGTH) || title,
   };

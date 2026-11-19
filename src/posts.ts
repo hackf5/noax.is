@@ -1,4 +1,6 @@
-import { RENDER_VERSION, renderMarkdown } from "./render";
+import { fileIds } from "./files/shortcodes";
+import { fileBatch, type Files } from "./files/store";
+import { RENDER_VERSION, renderMarkdown, renderPostTokens } from "./render";
 import { parsePost, slugifyTitle } from "./post-metadata";
 import { PostError, type Post, type PostPage, type PublishedPost, type Rendered, type SitemapBucket, type SitemapPost } from "./types";
 
@@ -37,13 +39,17 @@ export class Posts {
   constructor(
     private readonly db: D1Database,
     private readonly render: (markdown: string) => Rendered = renderMarkdown,
+    private readonly files?: Files,
   ) {}
 
   // Stored output is a cache of the Markdown. A Worker can't see its CPU limit coming, so the save
   // is awaited: if the Worker is killed, posts already rebuilt stay rebuilt for the next request.
   private async published(post: StoredPost): Promise<PublishedPost> {
     if (post.render_version === RENDER_VERSION) return post as PublishedPost;
-    const rendered = this.render(post.markdown);
+    const images = this.files && post.markdown.includes("{%") ? await this.files.attached(post.id) : undefined;
+    const rendered = images?.size
+      ? renderPostTokens(parsePost(post.markdown, true), this.files!.origin, images)
+      : this.render(post.markdown);
     try {
       // Matching version stops a slow read overwriting a newer edit. This isn't an edit, so version
       // and updated_at stay as they are.
@@ -125,35 +131,64 @@ export class Posts {
 
   async create(markdown: string): Promise<Post> {
     validateMarkdown(markdown);
-    const { html, title, summary } = this.render(markdown);
+    const { rendered: { html, title, summary }, ids } = await this.renderForWrite(markdown);
+    const id = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     // Titles can repeat but slugs can't, so the database picks the number. One statement is atomic, so
     // concurrent posts can't take the same slug, and a post costs one query however many share its
     // title. It uses the highest number rather than a count, which would collide after a deletion,
     // and ignores runs of over 9 digits, which could overflow.
-    const post = await this.db.prepare(
+    const insert = this.db.prepare(
       `INSERT INTO posts (id, slug, markdown, html, title, summary, render_version, created_at, updated_at)
        SELECT ?1, CASE WHEN EXISTS (SELECT 1 FROM posts WHERE slug = ?2) THEN ?2 || '-' || (1 + COALESCE((
            SELECT MAX(CAST(substr(slug, length(?2) + 2) AS INTEGER)) FROM posts
            WHERE slug GLOB ?2 || '-[0-9]*' AND length(slug) <= length(?2) + 10
          ), 1)) ELSE ?2 END, ?3, ?4, ?5, ?6, ?7, ?8, ?8
        RETURNING ${POST_COLUMNS}`,
-    ).bind(crypto.randomUUID(), slugifyTitle(parsePost(markdown).title), markdown, html, title, summary, RENDER_VERSION, timestamp).first<Post>();
+    ).bind(id, slugifyTitle(title), markdown, html, title, summary, RENDER_VERSION, timestamp);
+    const post = ids.length
+      ? (await fileBatch<Post>(this.db, [insert, this.insertLinks(id, ids)]))[0]?.results[0]
+      : await insert.first<Post>();
     if (!post) throw new Error("Post insert returned no result.");
     return post;
   }
 
   async update(id: string, markdown: string, expectedVersion: number): Promise<Post> {
     validateMarkdown(markdown);
-    const { html, title, summary } = this.render(markdown);
-    const post = await this.db.prepare(
+    const { rendered: { html, title, summary }, ids } = await this.renderForWrite(markdown);
+    const update = this.db.prepare(
       `UPDATE posts SET markdown = ?, html = ?, title = ?, summary = ?, render_version = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ? RETURNING ${POST_COLUMNS}`,
-    ).bind(markdown, html, title, summary, RENDER_VERSION, new Date().toISOString(), id, expectedVersion).first<Post>();
+    ).bind(markdown, html, title, summary, RENDER_VERSION, new Date().toISOString(), id, expectedVersion);
+    // Link writes use the old version before the update increments it, so a stale writer cannot
+    // replace links even if another writer has already committed expectedVersion + 1.
+    const post = this.files
+      ? (await fileBatch<Post>(this.db, [
+          this.db.prepare("DELETE FROM post_files WHERE post_id = ? AND EXISTS (SELECT 1 FROM posts WHERE id = ? AND version = ?)")
+            .bind(id, id, expectedVersion),
+          ...(ids.length ? [this.insertLinks(id, ids, expectedVersion)] : []),
+          update,
+        ])).at(-1)?.results[0]
+      : await update.first<Post>();
     if (!post) {
       await this.get(id);
       throw new PostError("conflict", "Post changed. Call get_post and review the latest version before editing again.");
     }
     return post;
+  }
+
+  private async renderForWrite(markdown: string): Promise<{ rendered: Rendered; ids: string[] }> {
+    if (!this.files || !markdown.includes("{%")) return { rendered: this.render(markdown), ids: [] };
+    const parsed = parsePost(markdown, true);
+    const ids = fileIds(parsed.tokens);
+    const images = await this.files.ready(ids);
+    return { rendered: renderPostTokens(parsed, this.files.origin, images), ids };
+  }
+
+  private insertLinks(id: string, ids: string[], expectedVersion?: number): D1PreparedStatement {
+    return this.db.prepare(
+      `INSERT INTO post_files (post_id, file_id) SELECT posts.id, files.value FROM posts, json_each(?) AS files
+       WHERE posts.id = ?${expectedVersion === undefined ? "" : " AND posts.version = ?"}`,
+    ).bind(JSON.stringify(ids), id, ...(expectedVersion === undefined ? [] : [expectedVersion]));
   }
 
   async delete(id: string, expectedVersion: number): Promise<void> {

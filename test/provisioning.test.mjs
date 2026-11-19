@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -15,6 +15,10 @@ const fakeCloudflare = fileURLToPath(new URL("./fixtures/fake-cloudflare.mjs", i
 const ACCOUNT = "fake-account";
 
 describe("site configuration", () => {
+  it("loads the slug backfill parser with Node's native TypeScript loader", async () => {
+    await import("../src/slug-backfill.ts");
+  });
+
   it("defaults everything except the public host", () => {
     assert.deepEqual(validateSite({ public_host: "blog.example.com" }), {
       public_host: "blog.example.com",
@@ -73,6 +77,21 @@ describe("site configuration", () => {
   it("refuses to build a deploy config without provisioning data", () => {
     const base = JSON.parse(readFileSync(join(repo, "wrangler.jsonc"), "utf8"));
     assert.throws(() => buildDeployConfig(base, validateSite({ public_host: "a.example" }), { database_id: "db" }), /access_aud/);
+  });
+
+  it("requires a provisioned zone and an inherited or uploaded secret only for opt-in analytics", () => {
+    const base = JSON.parse(readFileSync(join(repo, "wrangler.jsonc"), "utf8"));
+    const record = { database_id: "db", access_aud: "aud", access_team_domain: "https://t.cloudflareaccess.com" };
+    const site = { public_host: "blog.example.com" };
+    assert.throws(() => validateSite({ ...site, analytics: "false" }), /analytics/);
+    assert.throws(() => buildDeployConfig(base, validateSite({ ...site, analytics: true }), record), /zone ID/);
+    const disabled = buildDeployConfig(base, validateSite({ ...site, analytics: false }), { ...record, zone_id: "zone-1" });
+    assert.equal(disabled.vars.ANALYTICS_ZONE_ID, undefined);
+    assert.equal(disabled.secrets, undefined);
+    const enabled = buildDeployConfig(base, validateSite({ ...site, analytics: true }), { ...record, zone_id: "zone-1" });
+    assert.equal(enabled.vars.ANALYTICS_ZONE_ID, "zone-1");
+    assert.deepEqual(enabled.secrets.required, ["NOAX_ANALYTICS_TOKEN"]);
+    assert.equal(enabled.vars.NOAX_ANALYTICS_TOKEN, undefined);
   });
 
   it("points both client configs at the configured host", () => {
@@ -221,6 +240,71 @@ describe("provisioning against a fake Cloudflare", () => {
   const writes = (dir) => log(dir).split("\n").filter((line) => line.startsWith("POST"));
   const json = (dir, path) => JSON.parse(readFileSync(join(dir, path), "utf8"));
 
+  function prepareDeploy(dir) {
+    mkdirSync(join(dir, "src"));
+    cpSync(join(repo, "src/analytics.ts"), join(dir, "src/analytics.ts"));
+    mkdirSync(join(dir, "node_modules/wrangler/bin"), { recursive: true });
+    symlinkSync(join(repo, "node_modules/zod"), join(dir, "node_modules/zod"));
+    writeFileSync(join(dir, ".local/cloudflare.env"), "CLOUDFLARE_API_TOKEN=provisioning-fixture\n");
+    writeFileSync(join(dir, "node_modules/wrangler/bin/wrangler.js"), `
+      const { readFileSync, appendFileSync, statSync } = require("node:fs");
+      const args = process.argv.slice(2);
+      const config = JSON.parse(readFileSync(args[args.indexOf("--config") + 1]));
+      const path = args.includes("--secrets-file") ? args[args.indexOf("--secrets-file") + 1] : undefined;
+      const received = path && JSON.parse(readFileSync(path));
+      if (path && (received.NOAX_ANALYTICS_TOKEN !== process.env.FAKE_ANALYTICS_TOKEN || (statSync(path).mode & 511) !== 384)) process.exit(2);
+      appendFileSync("deployments.log", JSON.stringify({ required: config.secrets?.required ?? [], path, uploaded: Boolean(received) }) + "\\n");
+    `);
+  }
+
+  function deploy(dir, token = "analytics-fixture-only") {
+    return spawnSync(process.execPath, ["--import", fakeCloudflare, "scripts/deploy.mjs"], {
+      cwd: dir, encoding: "utf8",
+      env: { FAKE_CLOUDFLARE_STATE: join(dir, "state.json"), FAKE_CLOUDFLARE_LOG: join(dir, "log.txt"), FAKE_ANALYTICS_TOKEN: token },
+    });
+  }
+
+  it("enables analytics after a text-only install and handles later inheritance and rotation", () => {
+    const dir = workspace();
+    assert.equal(run(dir, "provision").status, 0);
+    prepareDeploy(dir);
+    const path = join(dir, ".local/analytics.secrets.json");
+    writeFileSync(path, "ignored for text-only setup");
+    assert.equal(deploy(dir).status, 0);
+    assert.doesNotMatch(log(dir), /POST \/graphql/);
+    writeFileSync(join(dir, ".local/site.json"), JSON.stringify({ public_host: "blog.example.com", analytics: true }));
+    assert.equal(run(dir, "provision").status, 0);
+    assert.equal(json(dir, ".local/provisioning.json").zone_id, "zone-1");
+    for (const token of ["analytics-fixture-only", "analytics-replacement-only"]) {
+      writeFileSync(path, JSON.stringify({ NOAX_ANALYTICS_TOKEN: token }));
+      const result = deploy(dir, token);
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stdout + result.stderr, new RegExp(token));
+    }
+    rmSync(path);
+    assert.equal(deploy(dir).status, 0);
+    const deployments = readFileSync(join(dir, "deployments.log"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(deployments.map(({ uploaded }) => uploaded), [false, true, true, false]);
+    assert.deepEqual(deployments.at(-1).required, ["NOAX_ANALYTICS_TOKEN"]);
+    assert.ok(deployments.filter(({ path }) => path).every(({ path }) => !existsSync(path)));
+  });
+
+  it("provisions analytics on a fresh site and blocks deployment with an invalid or rejected token", () => {
+    const dir = workspace({ site: { public_host: "blog.example.com", analytics: true }, state: { rejectAnalytics: true } });
+    assert.equal(run(dir, "provision").status, 0);
+    prepareDeploy(dir);
+    const path = join(dir, ".local/analytics.secrets.json");
+    writeFileSync(path, "NOAX_ANALYTICS_TOKEN=$CLOUDFLARE_API_TOKEN");
+    const malformed = deploy(dir);
+    assert.notEqual(malformed.status, 0);
+    assert.match(malformed.stderr, /JSON object containing just NOAX_ANALYTICS_TOKEN/);
+    writeFileSync(path, JSON.stringify({ NOAX_ANALYTICS_TOKEN: "analytics-fixture-only" }));
+    const rejected = deploy(dir);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /Analytics Read scope/);
+    assert.equal(existsSync(join(dir, "deployments.log")), false);
+  });
+
   it("sets up a stranger's subdomain from nothing and writes every generated file", () => {
     const dir = workspace();
     const result = run(dir, "provision");
@@ -258,6 +342,75 @@ describe("provisioning against a fake Cloudflare", () => {
     const second = run(dir, "provision");
     assert.equal(second.status, 0, second.stderr);
     assert.equal(writes(dir).length, before);
+  });
+
+  const files = { bucket_name: "blog-files", media_host: "media.example.com" };
+  const filesSite = { public_host: "blog.example.com", files };
+  const cloudflareWrites = (dir) => log(dir).split("\n").filter((line) => /^(POST|PUT|PATCH|DELETE) /.test(line));
+
+  it("provisions one bucket, CORS policy and scoped Cache Rule on a fresh files installation", () => {
+    const dir = workspace({ site: filesSite, state: { pendingMediaTls: true } });
+    const inspection = run(dir, "inspect");
+    assert.equal(inspection.status, 0, inspection.stderr);
+    assert.equal(JSON.parse(inspection.stdout).files.bucket_exists, false);
+    assert.deepEqual(cloudflareWrites(dir), []);
+    const result = run(dir, "provision");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /DNS or TLS is still activating/);
+    const config = json(dir, ".local/wrangler.deploy.jsonc");
+    assert.deepEqual(config.r2_buckets, [{ binding: "FILES", bucket_name: "blog-files" }]);
+    assert.equal(config.vars.MEDIA_HOST, files.media_host);
+    assert.ok(config.routes.every(({ pattern }) => pattern !== files.media_host));
+    const state = json(dir, "state.json");
+    assert.deepEqual(state.buckets[files.bucket_name].cors, [{ id: "noax-media", allowed: { origins: ["*"], methods: ["GET", "HEAD"] } }]);
+    assert.equal(state.buckets[files.bucket_name].domains[0].domain, files.media_host);
+    const [rule] = state.cacheRuleset.rules;
+    assert.equal(rule.expression, 'http.host eq "media.example.com"');
+    assert.deepEqual(rule.action_parameters, {
+      cache: true,
+      edge_ttl: { mode: "respect_origin", status_code_ttl: [{ status_code: 404, value: -1 }] },
+      browser_ttl: { mode: "respect_origin" },
+    });
+    const firstWrites = cloudflareWrites(dir);
+    const repeat = run(dir, "provision");
+    assert.equal(repeat.status, 0, repeat.stderr);
+    assert.deepEqual(cloudflareWrites(dir), firstWrites);
+  });
+
+  it("adds files to an existing blog and updates only its own cache rule", () => {
+    const unrelated = { id: "rule-1", ref: "elsewhere", expression: 'http.host eq "docs.example.com"', enabled: true };
+    const dir = workspace({ state: { cacheRuleset: { id: "cache-1", rules: [unrelated] } } });
+    assert.equal(run(dir, "provision").status, 0);
+    assert.doesNotMatch(log(dir), /\/r2\/|\/rulesets\/|\/dns_records/);
+    const record = json(dir, ".local/provisioning.json");
+    const credentials = readFileSync(join(dir, ".local/mcp.env"), "utf8");
+    writeFileSync(join(dir, ".local/site.json"), JSON.stringify(filesSite));
+    const upgrade = run(dir, "provision");
+    assert.equal(upgrade.status, 0, upgrade.stderr);
+    assert.deepEqual(json(dir, ".local/provisioning.json"), { ...record, files });
+    assert.equal(readFileSync(join(dir, ".local/mcp.env"), "utf8"), credentials);
+    const state = json(dir, "state.json");
+    assert.deepEqual(state.cacheRuleset.rules[0], unrelated);
+    state.cacheRuleset.rules[1].enabled = false;
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+    const fix = run(dir, "provision");
+    assert.equal(fix.status, 0, fix.stderr);
+    assert.deepEqual(json(dir, "state.json").cacheRuleset.rules, [unrelated, { ...state.cacheRuleset.rules[1], enabled: true }]);
+  });
+
+  it("reports missing R2 activation, Cache Settings access and host conflicts before writing", () => {
+    for (const [state, message] of [
+      [{ r2Inactive: true }, /Activate R2/],
+      [{ noCacheSettings: true }, /Zone Cache Settings Edit/],
+      [{ dns: [{ name: files.media_host, type: "A" }] }, /already configured/],
+      [{ routes: [{ pattern: "*.example.com/*", script: "blog-example-com" }] }, /must be a separate media hostname/],
+    ]) {
+      const dir = workspace({ site: filesSite, state });
+      const result = run(dir, "provision");
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, message);
+      assert.deepEqual(cloudflareWrites(dir), []);
+    }
   });
 
   it("adopts an existing instance without creating or renaming anything", () => {
