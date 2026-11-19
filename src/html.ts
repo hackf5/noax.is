@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import asciiScript from "./assets/ascii.js.txt";
 import type { Env, PostPage, PublishedPost } from "./types";
 import { postPath } from "./post-metadata";
 
@@ -8,15 +9,17 @@ export interface Site {
   locale: string;
   origin: string;
   contentSignal: string;
+  mediaOrigin?: string;
 }
 
-export function siteFrom(env: Env): Site {
+export function siteFrom(env: Env, mediaOrigin?: string): Site {
   return {
     title: env.SITE_TITLE,
     description: env.SITE_DESCRIPTION,
     locale: env.SITE_LOCALE,
     origin: `https://${env.PUBLIC_HOST}`,
     contentSignal: env.SITE_CONTENT_SIGNAL,
+    mediaOrigin,
   };
 }
 
@@ -52,12 +55,16 @@ article > a { color: var(--muted); font-family: ui-monospace, monospace; font-si
 blockquote { margin-inline: 0; padding-inline-start: 1rem; border-inline-start: 2px solid var(--line); color: var(--muted); }
 pre { max-width: 100%; overflow-x: auto; padding: 1rem; border: 1px solid var(--line); border-radius: .25rem; }
 code { font-family: ui-monospace, monospace; font-size: .9em; }
+.file-image { display: block; max-inline-size: 100%; block-size: auto; margin-block: 1em; }
+.file-ascii { max-inline-size: 100%; overflow: clip; padding: 0; border: 0; font: .5rem/1 ui-monospace, monospace; font-variant-ligatures: none; white-space: pre; overflow-wrap: normal; }
 nav { margin-block-start: 2rem; }
 .quiet { color: var(--muted); }
 `;
 
 // Changes with the stylesheet, so browsers can keep each version for good and still get new ones.
 export const stylesheetVersion = createHash("sha256").update(stylesheet).digest("hex").slice(0, 12);
+export { asciiScript };
+export const asciiScriptVersion = createHash("sha256").update(asciiScript).digest("hex").slice(0, 12);
 
 function ogTag(property: string, content: string): string {
   return `<meta property="${property}" content="${escapeHtml(content)}">`;
@@ -77,9 +84,12 @@ function layout(site: Site, content: string, meta: PageMeta = {}): string {
       ].join("")}`
     : "";
   const markdown = meta.markdown ? `<link rel="alternate" type="text/markdown" href="${escapeHtml(meta.markdown)}">` : "";
+  const ascii = site.mediaOrigin && content.includes(' data-noax-ascii="')
+    ? `<script type="module" src="/ascii.js?v=${asciiScriptVersion}"></script>`
+    : "";
   return `<!doctype html>
 <html lang="${escapeHtml(site.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="text-scale" content="scale"><meta name="description" content="${escapeHtml(description)}"><title>${escapeHtml(title)}</title>${social}<link rel="alternate" type="application/atom+xml" title="${escapeHtml(site.title)}" href="/feed.xml">${markdown}<link rel="icon" href="/favicon.ico" type="image/vnd.microsoft.icon" sizes="16x16 32x32"><link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/style.css?v=${stylesheetVersion}"></head>
-<body><div class="page"><header><h1><a href="/">${escapeHtml(site.title)}</a></h1></header><main>${content}</main></div></body></html>`;
+<body><div class="page"><header><h1><a href="/">${escapeHtml(site.title)}</a></h1></header><main>${content}</main></div>${ascii}</body></html>`;
 }
 
 function dateFormat(site: Site): Intl.DateTimeFormat {

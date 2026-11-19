@@ -1,5 +1,9 @@
 export interface Env {
   DB: D1Database;
+  FILES?: R2Bucket;
+  MEDIA_HOST?: string;
+  ANALYTICS_ZONE_ID?: string;
+  NOAX_ANALYTICS_TOKEN?: string;
   PUBLIC_HOST: string;
   MCP_HOST: string;
   ACCESS_TEAM_DOMAIN: string;

@@ -6,6 +6,7 @@ export default defineConfig({
     wrangler: { configPath: "./wrangler.jsonc" },
     remoteBindings: false,
     miniflare: {
+      r2Buckets: ["FILES"],
       bindings: {
         TEST_MIGRATIONS: await readD1Migrations("./migrations"),
         PUBLIC_HOST: "blog.test",

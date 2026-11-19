@@ -6,7 +6,7 @@ const logFile = process.env.FAKE_CLOUDFLARE_LOG;
 const load = () => JSON.parse(readFileSync(stateFile, "utf8"));
 const save = (state) => writeFileSync(stateFile, JSON.stringify(state));
 const ok = (result, extra = {}) => Response.json({ success: true, errors: [], result, ...extra });
-const fail = (status, message) => Response.json({ success: false, errors: [{ code: status, message }] }, { status });
+const fail = (status, message, code = status) => Response.json({ success: false, errors: [{ code, message }] }, { status });
 
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(String(input));
@@ -27,6 +27,12 @@ globalThis.fetch = async (input, init = {}) => {
   };
 
   if (path === "/zones") return ok(state.zones.filter((zone) => zone.name === url.searchParams.get("name")));
+  if (path === "/graphql") {
+    if (state.rejectAnalytics || new Headers(init.headers).get("Authorization") !== `Bearer ${process.env.FAKE_ANALYTICS_TOKEN}`) {
+      return Response.json({ errors: [{ message: "Analytics scope rejected." }] });
+    }
+    return Response.json({ data: { viewer: { zones: [{ daily: [], pages: [], countries: [], browsers: [], operating_systems: [], devices: [] }] } } });
+  }
   if (path === `${account}/access/organizations`) {
     return state.organization ? ok(state.organization) : fail(404, "access.api.error.not_enabled");
   }
@@ -63,6 +69,60 @@ globalThis.fetch = async (input, init = {}) => {
   }
   if (path === `${account}/workers/domains`) return ok(state.domains);
   if (/\/zones\/[^/]+\/workers\/routes$/.test(path)) return ok(state.routes);
+  if (/\/zones\/[^/]+\/dns_records$/.test(path)) return paged((state.dns ?? []).filter(({ name }) => name === url.searchParams.get("name.exact")));
+  if (path.startsWith(`${account}/r2/buckets`)) {
+    if (state.r2Inactive) return fail(403, "Please enable R2 through the Cloudflare Dashboard.", 10042);
+    state.buckets ??= {};
+    if (path === `${account}/r2/buckets` && method === "POST") {
+      const bucket = { name: body.name, storage_class: body.storageClass, jurisdiction: "default", domains: [], cors: [] };
+      state.buckets[body.name] = bucket;
+      save(state);
+      return ok(bucket);
+    }
+    const [name, ...suffix] = path.slice(`${account}/r2/buckets/`.length).split("/");
+    const bucket = state.buckets[name];
+    if (!bucket) return fail(404, "NoSuchBucket", 10006);
+    if (!suffix.length) return ok(bucket);
+    if (suffix[0] === "cors") {
+      if (method === "GET") return ok({ rules: bucket.cors });
+      bucket.cors = body.rules;
+      save(state);
+      return ok({});
+    }
+    if (suffix.join("/") === "domains/managed") return ok({ enabled: Boolean(bucket.managed) });
+    if (suffix.join("/") === "domains/custom") {
+      if (method === "GET") return ok({ domains: bucket.domains });
+      const domain = { ...body, status: { ownership: "active", ssl: state.pendingMediaTls ? "pending" : "active" } };
+      bucket.domains.push(domain);
+      (state.dns ??= []).push({ name: body.domain, type: "CNAME" });
+      save(state);
+      return ok(domain);
+    }
+  }
+  const ruleset = /^\/zones\/[^/]+\/rulesets(.*)$/.exec(path);
+  if (ruleset) {
+    if (state.noCacheSettings) return fail(403, "Authentication error", 10000);
+    const suffix = ruleset[1];
+    if (suffix === "/phases/http_request_cache_settings/entrypoint") {
+      return state.cacheRuleset ? ok(state.cacheRuleset) : fail(404, "Could not find entrypoint ruleset", 10003);
+    }
+    if (!suffix && method === "POST") {
+      state.cacheRuleset = { ...body, id: "cache-1", rules: body.rules.map((rule) => ({ ...rule, id: "rule-1" })) };
+      save(state);
+      return ok(state.cacheRuleset);
+    }
+    if (suffix === `/${state.cacheRuleset.id}/rules` && method === "POST") {
+      state.cacheRuleset.rules.push({ ...body, id: `rule-${state.cacheRuleset.rules.length + 1}` });
+      save(state);
+      return ok(state.cacheRuleset);
+    }
+    if (method === "PATCH" && suffix.startsWith(`/${state.cacheRuleset.id}/rules/`)) {
+      const rule = state.cacheRuleset.rules.find(({ id }) => suffix.endsWith(`/${id}`));
+      Object.assign(rule, body);
+      save(state);
+      return ok(state.cacheRuleset);
+    }
+  }
   return fail(404, `Unhandled ${method} ${path}`);
 };
 

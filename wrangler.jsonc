@@ -12,7 +12,7 @@
     "enabled": true
   },
   "rules": [
-    { "type": "Text", "globs": ["**/*.svg"], "fallthrough": true },
+    { "type": "Text", "globs": ["**/*.svg", "**/*.js.txt"], "fallthrough": true },
     { "type": "Data", "globs": ["**/*.ico"], "fallthrough": true }
   ],
   "vars": {

@@ -23,11 +23,12 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "setup": "npm run -s cloudflare:provision && npm run -s db:migrate:remote && npm run -s db:backfill-slugs:remote && npm run -s deploy && npm run -s db:backfill-slugs:remote && npm run -s mcp:check",
     "site:config": "node scripts/site-config.mjs",
-    "deploy": "npm run -s site:config && node --env-file=.local/cloudflare.env node_modules/wrangler/bin/wrangler.js deploy --config .local/wrangler.deploy.jsonc",
+    "deploy": "node scripts/deploy.mjs",
     "cloudflare:inspect": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs inspect",
     "cloudflare:provision": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs provision",
     "cloudflare:rotate": "node --env-file=.local/cloudflare.env scripts/cloudflare.mjs rotate",
     "mcp:check": "node scripts/check-mcp.mjs",
+    "files:upload": "node scripts/upload-file.mjs",
     "smoke": "node --env-file=.local/mcp.env scripts/smoke.mjs"
   },
   "dependencies": {
