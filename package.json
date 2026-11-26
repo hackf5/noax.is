@@ -33,19 +33,19 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",
-    "agents": "0.33.0",
-    "jose": "6.2.15",
+    "agents": "0.34.0",
+    "jose": "6.2.18",
     "markdown-it": "15.0.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.5.1",
-    "@cloudflare/workers-types": "5.20261104.1",
+    "@cloudflare/vitest-plugin": "1.9.1",
+    "@cloudflare/workers-types": "5.20261123.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.0.0",
     "typescript": "7.0.2",
-    "vitest": "^5.1.0",
-    "wrangler": "4.157.0"
+    "vitest": "^5.1.1",
+    "wrangler": "4.167.0"
   }
 }
